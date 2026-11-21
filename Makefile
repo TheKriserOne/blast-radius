@@ -11,7 +11,7 @@ RUN_FLAGS := --rm --platform linux/amd64 --network none --cpus 2 \
 	--volume $(SAMPLE)/commits:/data/commits:ro \
 	--volume $(SAMPLE)/tests.json:/data/tests.json:ro
 
-.PHONY: build sample check coverage
+.PHONY: build sample check coverage imports
 
 build:
 	docker build --platform linux/amd64 --tag $(IMAGE) .
@@ -20,6 +20,11 @@ coverage:
 	docker build --platform linux/amd64 --target coverage --tag $(IMAGE)-coverage .
 	docker run --rm --platform linux/amd64 $(IMAGE)-coverage cat /coverage.json.gz > coverage.json.gz.tmp
 	mv coverage.json.gz.tmp coverage.json.gz
+
+imports:
+	docker build --platform linux/amd64 --target imports --tag $(IMAGE)-imports .
+	docker run --rm --platform linux/amd64 $(IMAGE)-imports cat /import_map.json.gz > import_map.json.gz.tmp
+	mv import_map.json.gz.tmp import_map.json.gz
 
 # Runs your image once on the sample commits under the scorer's limits and
 # scores what it printed.

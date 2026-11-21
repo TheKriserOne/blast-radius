@@ -6,6 +6,8 @@ import json
 import re
 from collections import defaultdict
 
+from factory_changes import factory_argument_structure
+
 FILE_HEADER = re.compile(
     r"a/([\w./-]+) b/\1\n(?:index [^\n]*\n)?--- a/\1\n\+\+\+ b/\1\n(?=@@ )",
     re.ASCII,
@@ -80,12 +82,28 @@ class FunctionBodies(ast.NodeVisitor):
 
 
 class Impact:
-    def __init__(self, tests, coverage_file, baseline):
+    def __init__(self, tests, coverage_file, baseline, import_map_file=None):
         self.baseline = baseline
         self.baseline_files = {}
         with gzip.open(coverage_file, "rt", encoding="utf-8") as stream:
             coverage = json.load(stream)
         self.collection = set(map(tuple, coverage["collection"]))
+        self.collection_files = {path for path, _ in self.collection}
+
+        self.import_map = {"factories": {}, "files_by_path": {}}
+        self.tests_by_file = defaultdict(set)
+        self.files_by_number = {}
+        self.unprofiled = set()
+        if import_map_file is not None:
+            with gzip.open(import_map_file, "rt", encoding="utf-8") as stream:
+                self.import_map = json.load(stream)
+            complete = set(self.import_map["complete_files"])
+            for test in tests:
+                file, number = test["file"], test["number"]
+                self.tests_by_file[file].add(number)
+                self.files_by_number[number] = file
+                if file not in complete:
+                    self.unprofiled.add(number)
 
         self.dependents = defaultdict(set)
         self.uncovered = set()
@@ -108,6 +126,26 @@ class Impact:
             self.baseline_files[path] = source, FunctionBodies(source, path)
         return self.baseline_files[path]
 
+    def is_parser_factory_edit(self, path, source, updated):
+        factories = self.import_map["factories"].get(path)
+        if not factories or path in self.collection_files or not self.import_map["files_by_path"].get(path):
+            return False
+        before = factory_argument_structure(ast.parse(source.encode("utf-8"), path), factories)
+        if before is None:
+            return False
+        after = factory_argument_structure(ast.parse(updated.encode("utf-8"), path), factories)
+        return before == after
+
+    def tests_for_module(self, path):
+        files = set(self.import_map["files_by_path"][path])
+        for line in self.lines[path] | {0}:
+            files.update(self.files_by_number[number]
+                         for number in self.dependents.get((path, line), ()))
+        tests = self.unprofiled.copy()
+        for file in files:
+            tests.update(self.tests_by_file[file])
+        return tests
+
     def select(self, patch):
         """Return affected test numbers, or None when the full suite is needed."""
         changes = re.split(r"(?m)^diff --git ", patch)
@@ -129,9 +167,11 @@ class Impact:
                     source, before = self.baseline_file(path)
                     updated = apply_hunks(source, change[header.end():])
                     after = FunctionBodies(updated, path)
+                    if before.structure != after.structure:
+                        if len(changes) == 2 and self.is_parser_factory_edit(path, source, updated):
+                            return selected | self.tests_for_module(path)
+                        return None
                 except (OSError, ValueError, SyntaxError, RecursionError):
-                    return None
-                if before.structure != after.structure:
                     return None
                 for (start, end, body), (_, _, new_body) in zip(before.bodies, after.bodies):
                     if body != new_body:

@@ -92,7 +92,7 @@ def choose_workers(tests: list[dict]) -> list[list[int]]:
 
 def main() -> None:
     tests = json.loads((DATA / "tests.json").read_text())["tests"]
-    impact = Impact(tests, APP / "coverage.json.gz", APP / "baseline")
+    impact = Impact(tests, APP / "coverage.json.gz", APP / "baseline", APP / "import_map.json.gz")
     by_number = {test["number"]: test for test in tests}
     schedules = {}
     for patch in sorted((DATA / "commits").glob("*.patch")):
