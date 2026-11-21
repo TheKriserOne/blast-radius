@@ -1,7 +1,6 @@
 """Track baseline invocations of certified parser-table factory results."""
 
 import ast
-from copy import deepcopy
 import gzip
 import json
 import os
@@ -53,9 +52,10 @@ def show_entries(module, factories):
     return entries
 
 
-def changed_show_entries(before, after, factories):
+def changed_show_entries(path, before, after, factories):
     """Isolate edits consisting solely of same-type literal arguments at these entries."""
-    old, new = deepcopy(before), deepcopy(after)
+    old = ast.parse(before.encode("utf-8"), path)
+    new = ast.parse(after.encode("utf-8"), path)
     old_calls, new_calls = show_entries(old, factories), show_entries(new, factories)
     if old_calls.keys() != new_calls.keys():
         return None

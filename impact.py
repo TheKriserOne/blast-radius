@@ -398,11 +398,7 @@ class Impact:
     def factory_call_dependencies(self, path, source, updated):
         if not self.has_factory_calls or factory_opaque(path) in self.factory_evidence:
             return None
-        sites = changed_show_entries(
-            ast.parse(source.encode("utf-8"), path),
-            ast.parse(updated.encode("utf-8"), path),
-            self.import_map["factories"][path],
-        )
+        sites = changed_show_entries(path, source, updated, self.import_map["factories"][path])
         if not sites or any(
             factory_tag("registered", path, site) not in self.factory_evidence for site in sites
         ):
