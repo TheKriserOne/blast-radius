@@ -9,8 +9,10 @@ from impact import Impact
 
 
 class ImpactTest(unittest.TestCase):
-    def select(self, before, after, imports=None, collection=()):
-        path = "sqlglot/parsers/example.py"
+    def select(
+        self, before, after, imports=None, collection=(), *,
+        path="sqlglot/parsers/example.py", expression_validators=None,
+    ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
             {"id": "unrelated", "number": 8, "file": "tests/test_unrelated.py"},
@@ -19,6 +21,10 @@ class ImpactTest(unittest.TestCase):
             "collection": collection,
             "tests": {"dependent": [[path, 2]], "unrelated": []},
         }
+        if expression_validators is not None:
+            coverage["expression_validation"] = True
+            for test_id, dependencies in expression_validators.items():
+                coverage["tests"][test_id].extend(dependencies)
         diff = f"diff --git a/{path} b/{path}\n" + "".join(
             unified_diff(
                 before.splitlines(keepends=True), after.splitlines(keepends=True),
@@ -73,3 +79,30 @@ class ImpactTest(unittest.TestCase):
 
         imports["complete_files"].remove("tests/test_unrelated.py")
         self.assertEqual(self.select(before, after, imports), {4, 8})
+
+    def test_expression_flag_includes_classes_copying_argument_types(self):
+        path = "sqlglot/expressions/example.py"
+        grant = ("@expr:sqlglot.expressions.example.Grant", 0)
+        revoke = ("@expr:sqlglot.expressions.example.Revoke", 0)
+        before = (
+            "class Grant(Expression):\n"
+            "    arg_types = {'kind': False}\n"
+            "class Revoke(Expression):\n"
+            "    arg_types = {**Grant.arg_types, 'cascade': True}\n"
+        )
+        after = before.replace("False", "True")
+        profiling = {"dependent": [grant], "unrelated": [revoke]}
+        self.assertIsNone(self.select(before, after, path=path))
+        self.assertEqual(self.select(
+            before, after, path=path, expression_validators=profiling,
+        ), {4, 8})
+        self.assertIsNone(self.select(
+            before, after, path=path, expression_validators={"dependent": [grant]},
+        ))
+        self.assertIsNone(self.select(
+            before, after, path=path, collection=[revoke], expression_validators=profiling,
+        ))
+        self.assertIsNone(self.select(
+            before, before.replace("'kind'", "'role'"),
+            path=path, expression_validators=profiling,
+        ))

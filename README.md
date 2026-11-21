@@ -38,7 +38,9 @@ make check    # the output's format only
 
 `sample/answers.json` lists the tests each sample commit breaks and the kind of change it is. The practice and final commits are hidden, and so is everything your program prints when it runs on them. A rejected submission tells you which rule it broke and nothing more, so reproduce problems here.
 
-`coverage.json.gz` contains per-test function and file dependencies captured on the pinned checkout. `import_map.json.gz` records which tests use modules and which parser factories only create closures. The selector uses that map for same-type literal edits to those factory calls in parser tables. Run `make coverage` and then `make imports` to regenerate the maps. Ordinary builds reuse both. Run `python3 -m unittest test_impact` to check patch classification.
+`coverage.json.gz` contains per-test function and file dependencies captured on the pinned checkout. It also records which expression classes each test validates. This allows selection for Boolean `arg_types` edits that preserve keys and avoids narrowing when a matching validation runs during collection.
+
+`import_map.json.gz` records which tests use modules and which parser factories only create closures. The selector uses that map for same-type literal edits to those factory calls in parser tables. Run `make coverage` and then `make imports` to regenerate the maps. Ordinary builds reuse both. Run `python3 -m unittest test_impact` to check patch classification.
 
 ## Submit
 

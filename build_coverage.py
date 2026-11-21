@@ -13,6 +13,7 @@ from multiprocessing.util import Finalize
 from pathlib import Path
 
 import pytest
+from expression_probe import observe_expression_validation
 
 _PROCESS_COVERAGE = None
 RAW_RECEIPT = "BLAST_RADIUS_RAW_RECEIPT"
@@ -44,6 +45,7 @@ class Coverage:
         self.output = Path(os.environ["BLAST_RADIUS_COVERAGE_DIR"])
         self.active = True
         self.raw_children = {}
+        self.expression_validation = observe_expression_validation(self.root, lambda: self.current)
         self.monitoring = monitoring = sys.monitoring
         monitoring.use_tool_id(monitoring.COVERAGE_ID, "blast-radius")
         monitoring.register_callback(monitoring.COVERAGE_ID, monitoring.events.PY_START, self.enter)
@@ -110,7 +112,11 @@ class Coverage:
         for receipt, (process, scope) in self.raw_children.items():
             try:
                 trace = json.loads(Path(receipt).read_text(encoding="utf-8"))
-                if process.poll() != 0 or trace["pid"] != process.pid:
+                if (
+                    process.poll() != 0
+                    or trace["pid"] != process.pid
+                    or not trace.get("expression_validation")
+                ):
                     raise ValueError("incomplete child trace")
                 scope.update(map(tuple, trace["dependencies"]))
             except (OSError, ValueError, KeyError, TypeError):
@@ -173,6 +179,7 @@ class Coverage:
         self.collect_raw_children()
         path = self.output / f"{worker}.json"
         path.write_text(json.dumps({
+            "expression_validation": self.expression_validation,
             "collection": sorted(self.collection),
             "tests": {
                 nodeid: sorted(dependencies | self.shared[nodeid.split("::", 1)[0]])
@@ -195,8 +202,10 @@ def pack_coverage(directory, output):
     collection = set()
     tests = {}
     child_tests = defaultdict(set)
+    expression_validation = True
     for path in directory.glob("*.json"):
         shard = json.loads(path.read_text())
+        expression_validation &= shard.get("expression_validation") is True
         collection.update(map(tuple, shard["collection"]))
         for nodeid, dependencies in shard["tests"].items():
             if path.name.startswith("child-"):
@@ -205,6 +214,7 @@ def pack_coverage(directory, output):
                 tests[nodeid] = set(map(tuple, dependencies))
 
     payload = {
+        "expression_validation": bool(tests) and expression_validation,
         "collection": sorted(collection),
         "tests": {
             nodeid: sorted(dependencies | child_tests[nodeid])

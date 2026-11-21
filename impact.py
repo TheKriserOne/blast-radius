@@ -6,6 +6,7 @@ import json
 import re
 from collections import defaultdict
 
+from expression_arguments import changed_expression_validators
 from factory_changes import factory_argument_structure
 
 FILE_HEADER = re.compile(
@@ -87,6 +88,7 @@ class Impact:
         self.baseline_files = {}
         with gzip.open(coverage_file, "rt", encoding="utf-8") as stream:
             coverage = json.load(stream)
+        self.has_expression_validation = coverage.get("expression_validation", False)
         self.collection = set(map(tuple, coverage["collection"]))
         self.collection_files = {path for path, _ in self.collection}
 
@@ -146,6 +148,21 @@ class Impact:
             tests.update(self.tests_by_file[file])
         return tests
 
+    def tests_for_expression_arguments(self, path, source, updated):
+        if (
+            not self.has_expression_validation
+            or not path.startswith("sqlglot/expressions/")
+            or (path, 0) in self.collection
+        ):
+            return None
+        validators = changed_expression_validators(path, source, updated)
+        if not validators or validators & self.collection or not validators <= self.dependents.keys():
+            return None
+        tests = set(self.dependents.get((path, 0), ()))
+        for validator in validators:
+            tests.update(self.dependents[validator])
+        return tests
+
     def select(self, patch):
         """Return affected test numbers, or None when the full suite is needed."""
         changes = re.split(r"(?m)^diff --git ", patch)
@@ -168,7 +185,12 @@ class Impact:
                     updated = apply_hunks(source, change[header.end():])
                     after = FunctionBodies(updated, path)
                     if before.structure != after.structure:
-                        if len(changes) == 2 and self.is_parser_factory_edit(path, source, updated):
+                        if len(changes) != 2:
+                            return None
+                        expression_tests = self.tests_for_expression_arguments(path, source, updated)
+                        if expression_tests is not None:
+                            return selected | expression_tests
+                        if self.is_parser_factory_edit(path, source, updated):
                             return selected | self.tests_for_module(path)
                         return None
                 except (OSError, ValueError, SyntaxError, RecursionError):

@@ -7,7 +7,10 @@ def start_trace(receipt, baseline):
     import atexit
     import sys
 
+    from expression_probe import observe_expression_validation
+
     dependencies = set()
+    expression_validation = observe_expression_validation(baseline, lambda: dependencies)
     monitor = sys.monitoring
     tool = monitor.COVERAGE_ID
     events = monitor.events
@@ -38,7 +41,11 @@ def start_trace(receipt, baseline):
         import json
 
         with open(receipt, "w", encoding="utf-8") as stream:
-            json.dump({"pid": os.getpid(), "dependencies": sorted(dependencies)}, stream)
+            json.dump({
+                "pid": os.getpid(),
+                "expression_validation": expression_validation,
+                "dependencies": sorted(dependencies),
+            }, stream)
 
     monitor.use_tool_id(tool, "blast-radius-raw-subprocess")
     monitor.register_callback(tool, events.PY_START, enter)
@@ -53,3 +60,8 @@ receipt = os.environ.pop("BLAST_RADIUS_RAW_RECEIPT", None)
 baseline = os.environ.pop("BLAST_RADIUS_RAW_BASELINE", None)
 if receipt and baseline:
     start_trace(receipt, baseline)
+elif os.environ.get("BLAST_RADIUS_COVERAGE_DIR"):
+    from expression_probe import observe_expression_validation
+
+    # Process-pool initializers may run before the worker attaches test coverage.
+    observe_expression_validation(os.getcwd())
