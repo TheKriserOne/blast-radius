@@ -11,7 +11,7 @@ from expression_probe import missing_optional_arguments
 from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filtered_dependency, pair_dependency
 from identity_comparisons import pure_equivalent
-from impact import Impact
+from impact import Impact, apply_hunks
 from ordered_comparisons import observe_order
 
 
@@ -91,6 +91,20 @@ class ImpactTest(unittest.TestCase):
         self.assertEqual(self.select(before, after, cached_source=after), {4})
         invalid = before.replace("    return", "    break\n    return")
         self.assertIsNone(self.select(before, invalid, cached_source=before))
+
+    def test_hunks_preserve_non_lf_separators_and_unterminated_rows(self):
+        hunks = (
+            "@@ -1,2 +1,2 @@\n before\rafter\n"
+            "-last\n\\ No newline at end of file\n"
+            "+new\u2028last\n\\ No newline at end of file\n"
+        )
+        self.assertEqual(apply_hunks("before\rafter\nlast", hunks), "before\rafter\nnew\u2028last")
+
+    def test_hunks_require_unterminated_rows_to_be_last(self):
+        with self.assertRaises(ValueError):
+            apply_hunks("one\n", "@@ -1 +1,2 @@\n-one\n+two\n\\ No newline at end of file\n+three\n")
+        with self.assertRaises(ValueError):
+            apply_hunks("one", "@@ -1,0 +2 @@\n+two\n")
 
     def test_selects_callers_of_changed_lambda(self):
         before = "class Factory:\n    callback = lambda value: value + 1\n"

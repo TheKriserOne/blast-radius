@@ -24,7 +24,8 @@ FILE_HEADER = re.compile(
     r"a/([\w./-]+) b/\1\n(?:index [^\n]*\n)?--- a/\1\n\+\+\+ b/\1\n(?=@@ )",
     re.ASCII,
 )
-HUNK_HEADER = re.compile(r"@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@[^\n]*\n")
+HUNK_HEADER = re.compile(r"@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@[^\n]*\n")
+NO_NEWLINE = "\\ No newline at end of file\n"
 UNTRACED = ("*", 0)
 
 
@@ -33,38 +34,67 @@ def mask_guard_operators(body):
     return body.replace("BoolOp(op=Or()", "BoolOp(op=And()").replace("ops=[NotEq()]", "ops=[Eq()]")
 
 
+def physical_lines(text):
+    """Keep Git's LF delimiters and leave other line separator bytes intact."""
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
+def hunk_lines(body):
+    """Read each hunk row with its optional Git end-of-file annotation."""
+    lines = iter(physical_lines(body))
+    line = next(lines, None)
+    while line is not None:
+        if line[0] not in " +-" or not line.endswith("\n"):
+            raise ValueError("unsupported hunk line")
+        following = next(lines, None)
+        if following == NO_NEWLINE:
+            if line == line[0] + "\n":
+                raise ValueError("empty line with no newline")
+            line = line[:-1]
+            following = next(lines, None)
+        yield line[0], line[1:]
+        line = following
+
+
 def apply_hunks(source, diff):
-    """Apply ordinary text hunks to the original source, checking old context."""
-    original = source.splitlines(keepends=True)
+    """Apply Git text hunks to the original source, checking old context."""
+    original = physical_lines(source)
     updated = []
     position = 0
-    for hunk in re.split(r"(?m)^(?=@@ )", diff)[1:]:
+    prefix, *hunks = re.split(r"(?m)^(?=@@ )", diff)
+    if prefix or not hunks:
+        raise ValueError("expected Git hunks")
+    for hunk in hunks:
         header = HUNK_HEADER.match(hunk)
         if not header:
             raise ValueError("invalid hunk header")
-        start = int(header[1])
-        count = int(header[2]) if header[2] is not None else 1
-        new_count = int(header[3]) if header[3] is not None else 1
+        start, count, new_start, new_count = map(int, header.groups(default="1"))
         start -= bool(count)
+        new_start -= bool(new_count)
         if not position <= start <= start + count <= len(original):
             raise ValueError("invalid hunk range")
 
         updated.extend(original[position:start])
+        if new_start != len(updated):
+            raise ValueError("invalid new hunk range")
         position = start
-        updated_before_hunk = len(updated)
-        for line in hunk[header.end():].splitlines(keepends=True):
-            if line[0] in " -":
-                if position >= start + count or original[position] != line[1:]:
+        for operation, line in hunk_lines(hunk[header.end():]):
+            if operation in " -":
+                if position >= start + count or original[position] != line:
                     raise ValueError("hunk does not match baseline")
                 position += 1
-            if line[0] in " +":
-                updated.append(line[1:])
-            if line[0] not in " +-":
-                raise ValueError("unsupported hunk line")
-        if position != start + count or len(updated) - updated_before_hunk != new_count:
+            if operation in " +":
+                updated.append(line)
+        if position != start + count or len(updated) != new_start + new_count:
             raise ValueError("incomplete hunk")
 
     updated.extend(original[position:])
+    if any(not line.endswith("\n") for line in updated[:-1]):
+        raise ValueError("missing newline before end of file")
     return "".join(updated)
 
 
