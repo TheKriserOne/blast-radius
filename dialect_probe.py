@@ -2,12 +2,14 @@
 
 import ast
 import sys
+from contextvars import ContextVar
 from importlib.machinery import PathFinder
 from pathlib import Path
 
 from factory_probe import attach_factory_calls
 from guard_comparisons import GuardReads, supports_guard_profile
 from identity_comparisons import IdentityProbe, IdentityReads, supports_identity_profile
+from literal_assignments import LiteralAssignments, supports_literal_profile
 
 
 MODULES = {
@@ -16,6 +18,7 @@ MODULES = {
     "sqlglot.optimizer.simplify",
     "sqlglot.tokenizer_core",
 }
+PROBE_SOURCE_READ = ContextVar("probe_source_read", default=None)
 
 
 class DialectReads(ast.NodeTransformer):
@@ -66,7 +69,10 @@ class DialectProbe:
         self.week_tags = {}
         self.escape_owners = {}
         if any(
-            module in MODULES or supports_identity_profile(module) or supports_guard_profile(module)
+            module in MODULES
+            or supports_identity_profile(module)
+            or supports_guard_profile(module)
+            or supports_literal_profile(module)
             for module in sys.modules
         ):
             raise RuntimeError("Dialect profiling began after SQLGlot was loaded")
@@ -119,10 +125,14 @@ class DialectProbe:
     def guard(self, site):
         self.scope().add((f"@guard-read:{site}", 0))
 
+    def literal_assignment(self, site):
+        self.scope().add((f"@literal-read:{site}", 0))
+
     def find_spec(self, name, path=None, target=None):
         identity_profile = supports_identity_profile(name)
         guard_profile = supports_guard_profile(name)
-        if name not in MODULES and not identity_profile and not guard_profile:
+        literal_profile = supports_literal_profile(name)
+        if name not in MODULES and not identity_profile and not guard_profile and not literal_profile:
             return None
         spec = PathFinder.find_spec(name, path, target)
         if spec is None or spec.loader is None:
@@ -130,7 +140,11 @@ class DialectProbe:
         expected = self.baseline.joinpath(*name.split(".")).with_suffix(".py")
         if Path(spec.origin).resolve() != expected:
             raise RuntimeError("Dialect profiling requires the pinned Python source")
-        source = spec.loader.get_source(name)
+        context = PROBE_SOURCE_READ.set(str(expected))
+        try:
+            source = spec.loader.get_source(name)
+        finally:
+            PROBE_SOURCE_READ.reset(context)
         reads = DialectReads()
         tree = reads.visit(ast.parse(source, spec.origin))
         if name == "sqlglot.tokenizer_core" and reads.numeric_lookups != 2:
@@ -142,6 +156,9 @@ class DialectProbe:
         guards = GuardReads(relative_path)
         if guard_profile:
             tree = guards.visit(tree)
+        literals = LiteralAssignments(relative_path, instrument=True)
+        if literal_profile:
+            tree = literals.visit(tree)
         code = compile(ast.fix_missing_locations(tree), spec.origin, "exec", dont_inherit=True)
 
         def execute(module):
@@ -149,7 +166,8 @@ class DialectProbe:
             module.__dict__["_blast_radius_numeric_escape"] = self.numeric_escape
             module.__dict__["_blast_radius_identity"] = self.identity.compare
             module.__dict__["_blast_radius_guard"] = self.guard
-            self.scope().update(comparisons.sites | guards.sites)
+            module.__dict__["_blast_radius_literal"] = self.literal_assignment
+            self.scope().update(comparisons.sites | guards.sites | literals.sites)
             exec(code, module.__dict__)
             attach_factory_calls(module)
 

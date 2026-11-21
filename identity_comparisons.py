@@ -168,5 +168,9 @@ class IdentityProbe:
         filename = code.co_filename
         if filename.startswith(self.prefix):
             path = filename.removeprefix(self.prefix)
-            if path.startswith("sqlglot/parsers/") or supports_identity_profile(path.replace("/", ".")):
+            if (
+                path == "sqlglot/parser.py"
+                or path.startswith(("sqlglot/parsers/", "sqlglot/generators/", "sqlglot/optimizer/"))
+                or supports_identity_profile(path.replace("/", "."))
+            ):
                 self.scope().add((f"@identity-code:{path}:{code.co_firstlineno}", 0))

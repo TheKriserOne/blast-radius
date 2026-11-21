@@ -12,6 +12,7 @@ from factory_changes import factory_argument_structure
 from factory_probe import changed_show_entries, opaque as factory_opaque, tag as factory_tag
 from guard_comparisons import changed_guards, supports_guard_profile
 from identity_comparisons import changed_identity_sites, supports_identity_profile
+from literal_assignments import changed_local_literals, supports_literal_profile
 
 FILE_HEADER = re.compile(
     r"a/([\w./-]+) b/\1\n(?:index [^\n]*\n)?--- a/\1\n\+\+\+ b/\1\n(?=@@ )",
@@ -69,7 +70,8 @@ class FunctionBodies(ast.NodeVisitor):
     def visit_FunctionDef(self, node):
         start = min([node.lineno, *(decorator.lineno for decorator in node.decorator_list)])
         body = ast.dump(ast.Module(body=node.body, type_ignores=[]))
-        self.bodies.append((start, node.end_lineno, body))
+        imports = any(isinstance(part, (ast.Import, ast.ImportFrom)) for part in ast.walk(node))
+        self.bodies.append((start, node.end_lineno, body, imports))
         # Defaults, decorators, and docstrings can affect import-time behavior.
         node.body = node.body[:1] if ast.get_docstring(node, clean=False) is not None else []
 
@@ -82,7 +84,7 @@ class FunctionBodies(ast.NodeVisitor):
             for value in ast.walk(node.body)
         ):
             return
-        self.bodies.append((node.lineno, node.end_lineno, ast.dump(node.body)))
+        self.bodies.append((node.lineno, node.end_lineno, ast.dump(node.body), False))
         node.body = ast.Constant(value=None)
 
 
@@ -96,6 +98,7 @@ class Impact:
         self.has_dialect_fields = coverage.get("dialect_fields", False)
         self.has_identity_comparisons = coverage.get("identity_comparisons", False)
         self.has_guard_coverage = coverage.get("guard_coverage", False)
+        self.has_literal_coverage = coverage.get("literal_coverage", False)
         self.has_factory_calls = coverage.get("factory_calls", False)
         decode_dependency = tuple
         if "dependencies" in coverage:
@@ -144,6 +147,10 @@ class Impact:
         self.guard_sites = {
             path.removeprefix("@guard-site:") for path, _ in all_dependencies
             if path.startswith("@guard-site:")
+        }
+        self.literal_sites = {
+            path.removeprefix("@literal-site:") for path, _ in all_dependencies
+            if path.startswith("@literal-site:")
         }
         self.factory_evidence = {
             dep for dep in all_dependencies if dep[0].startswith("@factory:")
@@ -224,7 +231,7 @@ class Impact:
         )
 
     def guard_dependencies(self, path, source, updated):
-        if not self.has_guard_coverage or not supports_guard_profile(path.replace("/", ".")):
+        if not self.has_guard_coverage or not supports_guard_profile(path.removesuffix(".py").replace("/", ".")):
             return None
         sites, code_lines = changed_guards(path, source, updated)
         if not sites or not sites <= self.guard_sites:
@@ -233,6 +240,18 @@ class Impact:
             {(path, 0)}
             | {(f"@identity-code:{path}:{line}", 0) for line in code_lines}
             | {(f"@guard-read:{site}", 0) for site in sites}
+        )
+
+    def literal_dependencies(self, path, source, updated):
+        if not self.has_literal_coverage or not supports_literal_profile(path.replace("/", ".")):
+            return None
+        sites, code_lines = changed_local_literals(path, source, updated)
+        if not sites or not sites <= self.literal_sites:
+            return None
+        return (
+            {(path, 0)}
+            | {(f"@identity-code:{path}:{line}", 0) for line in code_lines}
+            | {(f"@literal-read:{site}", 0) for site in sites}
         )
 
     def factory_call_dependencies(self, path, source, updated):
@@ -270,15 +289,29 @@ class Impact:
                     source, before = self.baseline_file(path)
                     updated = apply_hunks(source, change[header.end():])
                     after = FunctionBodies(updated, path)
+                    same_structure = before.structure == after.structure
+                    changed_ranges = []
+                    if same_structure:
+                        for (start, end, body, imports), (_, _, new_body, new_imports) in zip(
+                            before.bodies, after.bodies,
+                        ):
+                            if body == new_body:
+                                continue
+                            # A changed lazy import can affect tests that never call this function.
+                            if imports or new_imports:
+                                return None
+                            changed_ranges.append((start, end))
                     if len(changes) == 2:
                         profiled_deps = self.identity_dependencies(path, source, updated)
                         if profiled_deps is None:
                             profiled_deps = self.guard_dependencies(path, source, updated)
+                        if profiled_deps is None:
+                            profiled_deps = self.literal_dependencies(path, source, updated)
                         if profiled_deps is not None:
                             if profiled_deps & self.collection:
                                 return None
                             return selected.union(*(self.dependents.get(d, ()) for d in profiled_deps))
-                    if before.structure != after.structure:
+                    if not same_structure:
                         if len(changes) != 2:
                             return None
                         expression_tests = self.tests_for_expression_arguments(path, source, updated)
@@ -297,9 +330,8 @@ class Impact:
                         return None
                 except (OSError, ValueError, SyntaxError, RecursionError):
                     return None
-                for (start, end, body), (_, _, new_body) in zip(before.bodies, after.bodies):
-                    if body != new_body:
-                        dependencies.update((path, line) for line in self.lines[path] if start <= line <= end)
+                for start, end in changed_ranges:
+                    dependencies.update((path, line) for line in self.lines[path] if start <= line <= end)
                 if dependencies & self.collection:
                     return None
             elif path.startswith("tests/fixtures/") and (path, 0) in self.dependents:

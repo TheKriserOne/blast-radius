@@ -14,7 +14,7 @@ class ImpactTest(unittest.TestCase):
     def select(
         self, before, after, imports=None, collection=(), *,
         path="sqlglot/parsers/example.py", expression_validators=None, dialect_reads=None,
-        identity_reads=None, factory_calls=None, guard_reads=None,
+        identity_reads=None, factory_calls=None, guard_reads=None, literal_reads=None,
     ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
@@ -43,6 +43,10 @@ class ImpactTest(unittest.TestCase):
         if guard_reads is not None:
             coverage["guard_coverage"] = True
             for test_id, dependencies in guard_reads.items():
+                coverage["tests"][test_id].extend(dependencies)
+        if literal_reads is not None:
+            coverage["literal_coverage"] = True
+            for test_id, dependencies in literal_reads.items():
                 coverage["tests"][test_id].extend(dependencies)
         diff = f"diff --git a/{path} b/{path}\n" + "".join(
             unified_diff(
@@ -262,3 +266,46 @@ class ImpactTest(unittest.TestCase):
         self.assertIsNone(self.select(
             before, after, collection=[registration, read], path=path, guard_reads=reads,
         ))
+
+        path = "sqlglot/parser.py"
+        self.assertEqual(self.select(
+            before, after, collection=[(f"@guard-site:{path}:2:7", 0)], path=path,
+            guard_reads={"unrelated": [(f"@guard-read:{path}:2:7", 0)]},
+        ), {8})
+
+        importing = before.replace("        return", "        import external\n        return")
+        self.assertIsNone(self.select(
+            importing, importing.replace("and", "or"), path=path,
+            collection=[(f"@guard-site:{path}:2:7", 0)],
+            guard_reads={"unrelated": [(f"@guard-read:{path}:2:7", 0)]},
+        ))
+
+    def test_function_edit_changing_lazy_import_falls_back(self):
+        before = "def check():\n    return True\n"
+        after = before.replace("    return", "    import external\n    return")
+        self.assertIsNone(self.select(before, after))
+        self.assertIsNone(self.select(after, before))
+
+    def test_local_literal_selects_executed_assignments(self):
+        path = "sqlglot/generators/example.py"
+        before = "def check():\n    value = True\n    return value\n"
+        after = before.replace("True", "False")
+        registration = (f"@literal-site:{path}:2:4", 0)
+        read = (f"@literal-read:{path}:2:4", 0)
+        reads = {"unrelated": [read]}
+        self.assertEqual(self.select(
+            before, after, collection=[registration], path=path, literal_reads=reads,
+        ), {8})
+        self.assertEqual(self.select(
+            before, before.replace("True", "0"), collection=[registration],
+            path=path, literal_reads=reads,
+        ), {4})
+        self.assertIsNone(self.select(
+            before, after, collection=[registration, read], path=path, literal_reads=reads,
+        ))
+
+        shared = before.replace("    value", "    global value\n    value", 1)
+        self.assertEqual(self.select(
+            shared, shared.replace("True", "False"), collection=[(f"@literal-site:{path}:3:4", 0)],
+            path=path, literal_reads={"unrelated": [(f"@literal-read:{path}:3:4", 0)]},
+        ), {4})
