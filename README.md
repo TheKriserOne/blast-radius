@@ -40,6 +40,8 @@ make check    # the output's format only
 
 `coverage.json.gz` contains per-test function and file dependencies captured on the pinned checkout. It also records expression validation, dialect week-offset reads, and numeric escape lookups by dictionary owner and key. The selector uses those reads for literal value changes that preserve the field's structure. It uses the full suite when an affected read runs during collection.
 
+For an identity-to-equality edit at a profiled comparison, the selector includes tests with a different observed result, an unverified equality method, or direct access to the modified source or code. The baseline probe evaluates only verified pure comparisons.
+
 `import_map.json.gz` records which tests use modules and which parser factories only create closures. The selector uses that map for same-type literal edits to those factory calls in parser tables. Run `make coverage` and then `make imports` to regenerate the maps. Ordinary builds reuse both. Run `python3 -m unittest test_impact` to check patch classification.
 
 ## Submit

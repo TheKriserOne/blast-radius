@@ -5,6 +5,8 @@ import sys
 from importlib.machinery import PathFinder
 from pathlib import Path
 
+from identity_comparisons import IdentityProbe, IdentityReads, supports_identity_profile
+
 
 MODULES = {
     "sqlglot.dialects.dialect",
@@ -58,9 +60,10 @@ class DialectProbe:
     def __init__(self, baseline, scope):
         self.baseline = Path(baseline).resolve()
         self.scope = scope
+        self.identity = IdentityProbe(baseline, scope)
         self.week_tags = {}
         self.escape_owners = {}
-        if MODULES & sys.modules.keys():
+        if any(module in MODULES or supports_identity_profile(module) for module in sys.modules):
             raise RuntimeError("Dialect profiling began after SQLGlot was loaded")
         sys.meta_path.insert(0, self)
 
@@ -109,7 +112,8 @@ class DialectProbe:
         return value
 
     def find_spec(self, name, path=None, target=None):
-        if name not in MODULES:
+        identity_profile = supports_identity_profile(name)
+        if name not in MODULES and not identity_profile:
             return None
         spec = PathFinder.find_spec(name, path, target)
         if spec is None or spec.loader is None:
@@ -122,11 +126,17 @@ class DialectProbe:
         tree = reads.visit(ast.parse(source, spec.origin))
         if name == "sqlglot.tokenizer_core" and reads.numeric_lookups != 2:
             raise RuntimeError("Expected both numeric escape readers in the pinned tokenizer")
+        relative_path = expected.relative_to(self.baseline).as_posix()
+        comparisons = IdentityReads(relative_path)
+        if identity_profile:
+            tree = comparisons.visit(tree)
         code = compile(ast.fix_missing_locations(tree), spec.origin, "exec", dont_inherit=True)
 
         def execute(module):
             module.__dict__["_blast_radius_week_offset"] = self.week_offset
             module.__dict__["_blast_radius_numeric_escape"] = self.numeric_escape
+            module.__dict__["_blast_radius_identity"] = self.identity.compare
+            self.scope().update(comparisons.sites)
             exec(code, module.__dict__)
 
         spec.loader.exec_module = execute

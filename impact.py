@@ -9,6 +9,7 @@ from collections import defaultdict
 from dialect_fields import changed_dialect_fields
 from expression_arguments import changed_expression_validators
 from factory_changes import factory_argument_structure
+from identity_comparisons import changed_identity_sites, supports_identity_profile
 
 FILE_HEADER = re.compile(
     r"a/([\w./-]+) b/\1\n(?:index [^\n]*\n)?--- a/\1\n\+\+\+ b/\1\n(?=@@ )",
@@ -91,6 +92,7 @@ class Impact:
             coverage = json.load(stream)
         self.has_expression_validation = coverage.get("expression_validation", False)
         self.has_dialect_fields = coverage.get("dialect_fields", False)
+        self.has_identity_comparisons = coverage.get("identity_comparisons", False)
         self.collection = set(map(tuple, coverage["collection"]))
         self.collection_files = {path for path, _ in self.collection}
 
@@ -126,6 +128,10 @@ class Impact:
                 self.lines[path].add(line)
         self.unknown_numeric_reads = {
             dependency for dependency in all_dependencies if dependency[0].startswith("@numeric-unknown:")
+        }
+        self.identity_sites = {
+            path.removeprefix("@identity-site:") for path, _ in all_dependencies
+            if path.startswith("@identity-site:")
         }
 
     def baseline_file(self, path):
@@ -190,6 +196,18 @@ class Impact:
             return None
         return set().union(*(self.dependents.get(dependency, ()) for dependency in dependencies))
 
+    def identity_dependencies(self, path, source, updated):
+        if not self.has_identity_comparisons or not supports_identity_profile(path.replace("/", ".")):
+            return None
+        sites, code_lines = changed_identity_sites(path, source, updated)
+        if not sites or not sites <= self.identity_sites:
+            return None
+        return (
+            {(path, 0)}
+            | {(f"@identity-code:{path}:{line}", 0) for line in code_lines}
+            | {(f"@identity-unsafe:{site}", 0) for site in sites}
+        )
+
     def select(self, patch):
         """Return affected test numbers, or None when the full suite is needed."""
         changes = re.split(r"(?m)^diff --git ", patch)
@@ -211,6 +229,12 @@ class Impact:
                     source, before = self.baseline_file(path)
                     updated = apply_hunks(source, change[header.end():])
                     after = FunctionBodies(updated, path)
+                    if len(changes) == 2:
+                        comparison_deps = self.identity_dependencies(path, source, updated)
+                        if comparison_deps is not None:
+                            if comparison_deps & self.collection:
+                                return None
+                            return selected.union(*(self.dependents.get(d, ()) for d in comparison_deps))
                     if before.structure != after.structure:
                         if len(changes) != 2:
                             return None

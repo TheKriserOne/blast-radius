@@ -5,6 +5,7 @@ from difflib import unified_diff
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from identity_comparisons import pure_equivalent
 from impact import Impact
 
 
@@ -12,6 +13,7 @@ class ImpactTest(unittest.TestCase):
     def select(
         self, before, after, imports=None, collection=(), *,
         path="sqlglot/parsers/example.py", expression_validators=None, dialect_reads=None,
+        identity_reads=None,
     ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
@@ -28,6 +30,10 @@ class ImpactTest(unittest.TestCase):
         if dialect_reads is not None:
             coverage["dialect_fields"] = True
             for test_id, dependencies in dialect_reads.items():
+                coverage["tests"][test_id].extend(dependencies)
+        if identity_reads is not None:
+            coverage["identity_comparisons"] = True
+            for test_id, dependencies in identity_reads.items():
                 coverage["tests"][test_id].extend(dependencies)
         diff = f"diff --git a/{path} b/{path}\n" + "".join(
             unified_diff(
@@ -146,3 +152,56 @@ class ImpactTest(unittest.TestCase):
         ))
         reads = {"dependent": [(f"@numeric-owner:{owner}", 0)]}
         self.assertEqual(self.select(before, after, path=path, dialect_reads=reads), set())
+
+    def test_identity_rewrite_keeps_uncertified_tests_and_code_readers(self):
+        path = "sqlglot/executor/example.py"
+        before = "def check(value):\n    return value is None\n"
+        after = before.replace("is None", "== None")
+        site = f"{path}:2:11"
+        safe = [(f"@identity-site:{site}", 0)]
+        unsafe = (f"@identity-unsafe:{site}", 0)
+        self.assertEqual(self.select(
+            before, after, collection=safe, path=path, identity_reads={},
+        ), set())
+        self.assertEqual(self.select(
+            before, after, collection=safe, path=path,
+            identity_reads={"unrelated": [unsafe]},
+        ), {8})
+        self.assertEqual(self.select(
+            before, after, collection=safe, path=path,
+            identity_reads={"unrelated": [(path, 0)]},
+        ), {8})
+        self.assertEqual(self.select(
+            before, after, collection=[*safe, (f"@identity-code:{path}:5", 0)],
+            path=path, identity_reads={"unrelated": [(f"@identity-code:{path}:1", 0)]},
+        ), {8})
+        self.assertIsNone(self.select(
+            before, after, collection=[*safe, unsafe], path=path, identity_reads={},
+        ))
+        self.assertEqual(self.select(
+            before, after, path=path, identity_reads={},
+        ), {4})
+
+    def test_identity_probe_never_invokes_custom_comparators(self):
+        calls = []
+
+        class Value:
+            __module__ = "sqlglot.executor.example"
+
+            def __eq__(self, other):
+                calls.append(other)
+                return False
+
+        class Meta(type):
+            def __eq__(self, other):
+                calls.append(other)
+                return False
+
+        class Text(str, metaclass=Meta):
+            __module__ = "sqlglot.dialects.example"
+
+        text = Text("same")
+        self.assertFalse(pure_equivalent(Value(), None, False))
+        self.assertFalse(pure_equivalent(text, Text("same"), False))
+        self.assertTrue(pure_equivalent(text, text, True))
+        self.assertEqual(calls, [])
