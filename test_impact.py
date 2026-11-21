@@ -352,3 +352,17 @@ class ImpactTest(unittest.TestCase):
         self.assertEqual(self.select(
             before, before.replace("'yes'", "1"), collection=[registration], path=path, literal_reads=reads,
         ), {4})
+
+    def test_local_literal_selects_executed_return_call(self):
+        path = "sqlglot/generators/example.py"
+        before = "def render(self, value):\n    return self.func('COALESCE', value, quoted=False)\n"
+        after = before.replace("'COALESCE'", "'IFNULL'").replace("False", "True")
+        registration = (f"@literal-site:{path}:2:4", 0)
+        reads = {"unrelated": [(f"@literal-read:{path}:2:4", 0)]}
+        self.assertEqual(self.select(
+            before, after, collection=[registration], path=path, literal_reads=reads,
+        ), {8})
+        self.assertEqual(self.select(
+            before, after.replace("self.func", "self.other"),
+            collection=[registration], path=path, literal_reads=reads,
+        ), {4})

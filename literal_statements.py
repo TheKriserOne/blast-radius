@@ -39,18 +39,25 @@ class LiteralStatements(ast.NodeTransformer):
     def visit_Assign(self, node):
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
             return node
-        return self.visit_literal(node)
+        return self.visit_literals(node, (node.value,))
 
     def visit_Return(self, node):
-        return self.visit_literal(node)
+        value = node.value
+        if isinstance(value, ast.Call):
+            return self.visit_literals(node, [*value.args, *(arg.value for arg in value.keywords)])
+        return self.visit_literals(node, (value,))
 
-    def visit_literal(self, node):
-        if not self.local_scope or not isinstance(node.value, ast.Constant):
+    def visit_literals(self, node, values):
+        if not self.local_scope:
+            return node
+        literals = [value for value in values if isinstance(value, ast.Constant)]
+        if not literals:
             return node
         site = location(self.path, node)
         if not self.instrument:
-            self.literals[site] = node.value.value
-            node.value.value = type(node.value.value).__name__
+            self.literals[site] = tuple(repr(literal.value) for literal in literals)
+            for literal in literals:
+                literal.value = type(literal.value).__name__
             return node
         self.sites.add((f"@literal-site:{site}", 0))
         read = ast.Expr(ast.Call(
@@ -71,5 +78,5 @@ def changed_local_literals(path, source, updated):
         return set(), set()
     # repr preserves differences such as positive and negative zero.
     changed = {site for (site, value), new_value in zip(old.literals.items(), new.literals.values())
-               if repr(value) != repr(new_value)}
+               if value != new_value}
     return changed, enclosing_code_lines(before, changed)
