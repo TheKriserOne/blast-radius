@@ -82,6 +82,7 @@ class FunctionBodies(ast.NodeVisitor):
 class Impact:
     def __init__(self, tests, coverage_file, baseline):
         self.baseline = baseline
+        self.baseline_files = {}
         with gzip.open(coverage_file, "rt", encoding="utf-8") as stream:
             coverage = json.load(stream)
         self.collection = set(map(tuple, coverage["collection"]))
@@ -101,6 +102,12 @@ class Impact:
             if line:
                 self.lines[path].add(line)
 
+    def baseline_file(self, path):
+        if path not in self.baseline_files:
+            source = (self.baseline / path).read_bytes().decode("utf-8")
+            self.baseline_files[path] = source, FunctionBodies(source, path)
+        return self.baseline_files[path]
+
     def select(self, patch):
         """Return affected test numbers, or None when the full suite is needed."""
         changes = re.split(r"(?m)^diff --git ", patch)
@@ -119,9 +126,8 @@ class Impact:
             dependencies = {(path, 0)}
             if path.startswith("sqlglot/") and path.endswith(".py"):
                 try:
-                    source = (self.baseline / path).read_bytes().decode("utf-8")
+                    source, before = self.baseline_file(path)
                     updated = apply_hunks(source, change[header.end():])
-                    before = FunctionBodies(source, path)
                     after = FunctionBodies(updated, path)
                 except (OSError, ValueError, SyntaxError, RecursionError):
                     return None
