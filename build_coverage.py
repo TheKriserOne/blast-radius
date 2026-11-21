@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from expression_probe import observe_expression_validation
+from factory_probe import observe_factory_calls
 
 _PROCESS_COVERAGE = None
 RAW_RECEIPT = "BLAST_RADIUS_RAW_RECEIPT"
@@ -45,6 +46,7 @@ class Coverage:
         self.output = Path(os.environ["BLAST_RADIUS_COVERAGE_DIR"])
         self.active = True
         self.raw_children = {}
+        self.factory_probe = observe_factory_calls(self.root, lambda: self.current)
         self.expression_validation = observe_expression_validation(self.root, lambda: self.current)
         self.monitoring = monitoring = sys.monitoring
         monitoring.use_tool_id(monitoring.COVERAGE_ID, "blast-radius")
@@ -54,6 +56,8 @@ class Coverage:
         sys.addaudithook(self.audit)
 
     def enter(self, code, _offset):
+        if self.factory_probe is not None:
+            self.factory_probe.called(code, self.current)
         if code.co_filename.startswith(self.source):
             self.current.add((code.co_filename[len(self.root):], code.co_firstlineno))
         return self.monitoring.DISABLE
@@ -116,6 +120,7 @@ class Coverage:
                     process.poll() != 0
                     or trace["pid"] != process.pid
                     or not trace.get("expression_validation")
+                    or (self.factory_probe is not None and not trace.get("factory_calls"))
                 ):
                     raise ValueError("incomplete child trace")
                 scope.update(map(tuple, trace["dependencies"]))
@@ -182,6 +187,7 @@ class Coverage:
             "expression_validation": self.expression_validation,
             "dialect_fields": self.expression_validation,
             "identity_comparisons": self.expression_validation,
+            "factory_calls": self.factory_probe is not None,
             "collection": sorted(self.collection),
             "tests": {
                 nodeid: sorted(dependencies | self.shared[nodeid.split("::", 1)[0]])
@@ -207,11 +213,13 @@ def pack_coverage(directory, output):
     expression_validation = True
     dialect_fields = True
     identity_comparisons = True
+    factory_calls = True
     for path in directory.glob("*.json"):
         shard = json.loads(path.read_text())
         expression_validation &= shard.get("expression_validation") is True
         dialect_fields &= shard.get("dialect_fields") is True
         identity_comparisons &= shard.get("identity_comparisons") is True
+        factory_calls &= shard.get("factory_calls") is True
         collection.update(map(tuple, shard["collection"]))
         for nodeid, dependencies in shard["tests"].items():
             if path.name.startswith("child-"):
@@ -223,6 +231,7 @@ def pack_coverage(directory, output):
         "expression_validation": bool(tests) and expression_validation,
         "dialect_fields": bool(tests) and dialect_fields,
         "identity_comparisons": bool(tests) and identity_comparisons,
+        "factory_calls": bool(tests) and factory_calls,
         "collection": sorted(collection),
         "tests": {
             nodeid: sorted(dependencies | child_tests[nodeid])

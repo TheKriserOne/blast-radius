@@ -5,6 +5,7 @@ from difflib import unified_diff
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from factory_probe import opaque as factory_opaque, tag as factory_tag
 from identity_comparisons import pure_equivalent
 from impact import Impact
 
@@ -13,7 +14,7 @@ class ImpactTest(unittest.TestCase):
     def select(
         self, before, after, imports=None, collection=(), *,
         path="sqlglot/parsers/example.py", expression_validators=None, dialect_reads=None,
-        identity_reads=None,
+        identity_reads=None, factory_calls=None,
     ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
@@ -34,6 +35,10 @@ class ImpactTest(unittest.TestCase):
         if identity_reads is not None:
             coverage["identity_comparisons"] = True
             for test_id, dependencies in identity_reads.items():
+                coverage["tests"][test_id].extend(dependencies)
+        if factory_calls is not None:
+            coverage["factory_calls"] = True
+            for test_id, dependencies in factory_calls.items():
                 coverage["tests"][test_id].extend(dependencies)
         diff = f"diff --git a/{path} b/{path}\n" + "".join(
             unified_diff(
@@ -89,6 +94,32 @@ class ImpactTest(unittest.TestCase):
 
         imports["complete_files"].remove("tests/test_unrelated.py")
         self.assertEqual(self.select(before, after, imports), {4, 8})
+
+    def test_show_parser_table_factory_can_select_exact_calls(self):
+        path = "sqlglot/parsers/example.py"
+        before = "from parser_helpers import factory\nclass Parser:\n    SHOW_PARSERS = {'key': factory(False)}\n"
+        after = before.replace("False", "True")
+        imports = {
+            "complete_files": ["tests/test_dependent.py", "tests/test_unrelated.py"],
+            "files_by_path": {path: ["tests/test_dependent.py", "tests/test_unrelated.py"]},
+            "factories": {path: {"Parser": ["factory"]}},
+        }
+        site = ("Parser", "SHOW_PARSERS", "key")
+        registered = [factory_tag("registered", path, site)]
+        called = factory_tag("called", path, site)
+        self.assertEqual(self.select(
+            before, after, imports, factory_calls={"dependent": registered},
+        ), set())
+        self.assertEqual(self.select(
+            before, after, imports, factory_calls={"dependent": [*registered, called]},
+        ), {4})
+        self.assertEqual(self.select(
+            before, after, imports,
+            factory_calls={"dependent": registered, "unrelated": [factory_opaque(path)]},
+        ), {4, 8})
+        self.assertEqual(self.select(
+            before, after, imports, factory_calls={},
+        ), {4, 8})
 
     def test_expression_flag_includes_classes_copying_argument_types(self):
         path = "sqlglot/expressions/example.py"

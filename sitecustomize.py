@@ -8,9 +8,11 @@ def start_trace(receipt, baseline):
     import sys
 
     from expression_probe import observe_expression_validation
+    from factory_probe import observe_factory_calls
 
     dependencies = set()
     expression_validation = observe_expression_validation(baseline, lambda: dependencies)
+    factory_probe = observe_factory_calls(baseline, lambda: dependencies)
     monitor = sys.monitoring
     tool = monitor.COVERAGE_ID
     events = monitor.events
@@ -19,6 +21,8 @@ def start_trace(receipt, baseline):
     opaque_launchers = (f"{stdlib}/multiprocessing/", f"{stdlib}/ctypes/")
 
     def enter(code, _offset):
+        if factory_probe is not None:
+            factory_probe.called(code, dependencies)
         if code.co_filename.startswith(baseline + "sqlglot/"):
             dependencies.add((code.co_filename[len(baseline):], code.co_firstlineno))
         elif code.co_filename.startswith(opaque_launchers):
@@ -44,6 +48,7 @@ def start_trace(receipt, baseline):
             json.dump({
                 "pid": os.getpid(),
                 "expression_validation": expression_validation,
+                "factory_calls": factory_probe is not None,
                 "dependencies": sorted(dependencies),
             }, stream)
 
@@ -62,6 +67,8 @@ if receipt and baseline:
     start_trace(receipt, baseline)
 elif os.environ.get("BLAST_RADIUS_COVERAGE_DIR"):
     from expression_probe import observe_expression_validation
+    from factory_probe import observe_factory_calls
 
     # Process-pool initializers may run before the worker attaches test coverage.
     observe_expression_validation(os.getcwd())
+    observe_factory_calls(os.getcwd())

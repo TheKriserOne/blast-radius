@@ -9,6 +9,7 @@ from collections import defaultdict
 from dialect_fields import changed_dialect_fields
 from expression_arguments import changed_expression_validators
 from factory_changes import factory_argument_structure
+from factory_probe import changed_show_entries, opaque as factory_opaque, tag as factory_tag
 from identity_comparisons import changed_identity_sites, supports_identity_profile
 
 FILE_HEADER = re.compile(
@@ -93,6 +94,7 @@ class Impact:
         self.has_expression_validation = coverage.get("expression_validation", False)
         self.has_dialect_fields = coverage.get("dialect_fields", False)
         self.has_identity_comparisons = coverage.get("identity_comparisons", False)
+        self.has_factory_calls = coverage.get("factory_calls", False)
         self.collection = set(map(tuple, coverage["collection"]))
         self.collection_files = {path for path, _ in self.collection}
 
@@ -132,6 +134,9 @@ class Impact:
         self.identity_sites = {
             path.removeprefix("@identity-site:") for path, _ in all_dependencies
             if path.startswith("@identity-site:")
+        }
+        self.factory_evidence = {
+            dep for dep in all_dependencies if dep[0].startswith("@factory:")
         }
 
     def baseline_file(self, path):
@@ -208,6 +213,20 @@ class Impact:
             | {(f"@identity-unsafe:{site}", 0) for site in sites}
         )
 
+    def factory_call_dependencies(self, path, source, updated):
+        if not self.has_factory_calls or factory_opaque(path) in self.factory_evidence:
+            return None
+        sites = changed_show_entries(
+            ast.parse(source.encode("utf-8"), path),
+            ast.parse(updated.encode("utf-8"), path),
+            self.import_map["factories"][path],
+        )
+        if not sites or any(
+            factory_tag("registered", path, site) not in self.factory_evidence for site in sites
+        ):
+            return None
+        return {(path, 0)} | {factory_tag("called", path, site) for site in sites}
+
     def select(self, patch):
         """Return affected test numbers, or None when the full suite is needed."""
         changes = re.split(r"(?m)^diff --git ", patch)
@@ -245,6 +264,11 @@ class Impact:
                         if dialect_tests is not None:
                             return selected | dialect_tests
                         if self.is_parser_factory_edit(path, source, updated):
+                            factory_deps = self.factory_call_dependencies(path, source, updated)
+                            if factory_deps is not None:
+                                if factory_deps & self.collection:
+                                    return None
+                                return selected.union(*(self.dependents.get(d, ()) for d in factory_deps))
                             return selected | self.tests_for_module(path)
                         return None
                 except (OSError, ValueError, SyntaxError, RecursionError):
