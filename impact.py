@@ -10,9 +10,10 @@ from dialect_fields import changed_dialect_fields
 from expression_arguments import changed_expression_validators
 from factory_changes import factory_argument_structure
 from factory_probe import changed_show_entries, opaque as factory_opaque, tag as factory_tag
+from fixture_reads import filter_comments, filtered_dependency
 from guard_comparisons import changed_guards, supports_guard_profile
 from identity_comparisons import changed_identity_sites, supports_identity_profile
-from literal_assignments import changed_local_literals, supports_literal_profile
+from literal_statements import changed_local_literals, supports_literal_profile
 
 FILE_HEADER = re.compile(
     r"a/([\w./-]+) b/\1\n(?:index [^\n]*\n)?--- a/\1\n\+\+\+ b/\1\n(?=@@ )",
@@ -268,6 +269,14 @@ class Impact:
             return None
         return {(path, 0)} | {factory_tag("called", path, site) for site in sites}
 
+    def same_filtered_fixture(self, path, hunks):
+        try:
+            source = (self.baseline / path).read_bytes().decode("utf-8")
+            updated = apply_hunks(source, hunks)
+        except (OSError, ValueError):
+            return False
+        return filter_comments(source) == filter_comments(updated)
+
     def select(self, patch):
         """Return affected test numbers, or None when the full suite is needed."""
         changes = re.split(r"(?m)^diff --git ", patch)
@@ -334,8 +343,14 @@ class Impact:
                     dependencies.update((path, line) for line in self.lines[path] if start <= line <= end)
                 if dependencies & self.collection:
                     return None
-            elif path.startswith("tests/fixtures/") and (path, 0) in self.dependents:
-                if (path, 0) in self.collection:
+            elif path.startswith("tests/fixtures/"):
+                filtered = filtered_dependency(path)
+                if filtered in self.dependents or filtered in self.collection:
+                    if len(changes) != 2 or not self.same_filtered_fixture(path, change[header.end():]):
+                        dependencies.add(filtered)
+                elif (path, 0) not in self.dependents:
+                    return None
+                if dependencies & self.collection:
                     return None
             else:
                 return None

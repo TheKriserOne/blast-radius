@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from expression_probe import observe_expression_validation
 from factory_probe import observe_factory_calls
+from fixture_reads import fixture_dependency
 
 _PROCESS_COVERAGE = None
 RAW_RECEIPT = "BLAST_RADIUS_RAW_RECEIPT"
@@ -65,10 +66,10 @@ class Coverage:
     def audit(self, event, args):
         if not self.active:
             return
-        if event == "open" and isinstance(args[0], str):
-            path = args[0]
-            if path.startswith(self.fixtures) or path.startswith("tests/fixtures/"):
-                self.current.add((path.removeprefix(self.root), 0))
+        if event == "open" and isinstance(args[0], (str, bytes)):
+            path = os.path.abspath(os.fsdecode(args[0]))
+            if path.startswith(self.fixtures):
+                self.current.add(fixture_dependency(path[len(self.root):], sys._getframe(1).f_code, self.root))
             elif path.startswith(self.source) and path.endswith(".py"):
                 caller = sys._getframe(1).f_code.co_filename
                 if not caller.startswith("<frozen importlib"):

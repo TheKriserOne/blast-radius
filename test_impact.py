@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from factory_probe import opaque as factory_opaque, tag as factory_tag
+from fixture_reads import filtered_dependency
 from identity_comparisons import pure_equivalent
 from impact import Impact
 
@@ -14,7 +15,7 @@ class ImpactTest(unittest.TestCase):
     def select(
         self, before, after, imports=None, collection=(), *,
         path="sqlglot/parsers/example.py", expression_validators=None, dialect_reads=None,
-        identity_reads=None, factory_calls=None, guard_reads=None, literal_reads=None,
+        identity_reads=None, factory_calls=None, guard_reads=None, literal_reads=None, fixture_reads=None,
     ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
@@ -48,6 +49,9 @@ class ImpactTest(unittest.TestCase):
             coverage["literal_coverage"] = True
             for test_id, dependencies in literal_reads.items():
                 coverage["tests"][test_id].extend(dependencies)
+        if fixture_reads is not None:
+            for test_id, dependencies in fixture_reads.items():
+                coverage["tests"][test_id].extend(dependencies)
         diff = f"diff --git a/{path} b/{path}\n" + "".join(
             unified_diff(
                 before.splitlines(keepends=True), after.splitlines(keepends=True),
@@ -78,6 +82,20 @@ class ImpactTest(unittest.TestCase):
     def test_class_scope_change_falls_back(self):
         before = "class Factory:\n    value = 1\n"
         self.assertIsNone(self.select(before, before.replace("= 1", "= 2")))
+
+    def test_fixture_comment_preserves_filtered_reads(self):
+        path = "tests/fixtures/example.sql"
+        before = "SELECT 1;\nSELECT 1;\n"
+        after = before + "-- comment\n"
+        filtered = filtered_dependency(path)
+        self.assertEqual(self.select(before, after, path=path, fixture_reads={
+            "dependent": [filtered],
+        }), set())
+        reads = {"dependent": [filtered], "unrelated": [(path, 0)]}
+        self.assertEqual(self.select(before, after, path=path, fixture_reads=reads), {8})
+        self.assertEqual(self.select(before, after.replace("--", "  --"), path=path, fixture_reads=reads), {4, 8})
+        self.assertIsNone(self.select(before, after, collection=[(path, 0)], path=path, fixture_reads=reads))
+        self.assertEqual(self.select(before, after, collection=[filtered], path=path, fixture_reads=reads), {8})
 
     def test_parser_table_factory_selects_module_consumers(self):
         path = "sqlglot/parsers/example.py"
@@ -308,4 +326,17 @@ class ImpactTest(unittest.TestCase):
         self.assertEqual(self.select(
             shared, shared.replace("True", "False"), collection=[(f"@literal-site:{path}:3:4", 0)],
             path=path, literal_reads={"unrelated": [(f"@literal-read:{path}:3:4", 0)]},
+        ), {4})
+
+    def test_local_literal_selects_executed_return(self):
+        path = "sqlglot/generators/example.py"
+        before = "def check(flag):\n    if flag:\n        return 'yes'\n    return 'no'\n"
+        after = before.replace("'yes'", "'maybe'")
+        registration = (f"@literal-site:{path}:3:8", 0)
+        reads = {"unrelated": [(f"@literal-read:{path}:3:8", 0)]}
+        self.assertEqual(self.select(
+            before, after, collection=[registration], path=path, literal_reads=reads,
+        ), {8})
+        self.assertEqual(self.select(
+            before, before.replace("'yes'", "1"), collection=[registration], path=path, literal_reads=reads,
         ), {4})

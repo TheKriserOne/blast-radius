@@ -9,7 +9,7 @@ from pathlib import Path
 from factory_probe import attach_factory_calls
 from guard_comparisons import GuardReads, supports_guard_profile
 from identity_comparisons import IdentityProbe, IdentityReads, supports_identity_profile
-from literal_assignments import LiteralAssignments, supports_literal_profile
+from literal_statements import LiteralStatements, supports_literal_profile
 
 
 MODULES = {
@@ -156,7 +156,7 @@ class DialectProbe:
         guards = GuardReads(relative_path)
         if guard_profile:
             tree = guards.visit(tree)
-        literals = LiteralAssignments(relative_path, instrument=True)
+        literals = LiteralStatements(relative_path, instrument=True)
         if literal_profile:
             tree = literals.visit(tree)
         code = compile(ast.fix_missing_locations(tree), spec.origin, "exec", dont_inherit=True)

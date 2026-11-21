@@ -42,7 +42,9 @@ make check    # the output's format only
 
 For an identity-to-equality edit at a profiled comparison, the selector includes tests with a different observed result, an unverified equality method, or direct access to the modified source or code. The baseline probe evaluates only verified pure comparisons.
 
-For an isolated `and`/`or` change in a profiled parser guard or a same-type literal edit in a local assignment, the selector includes tests that reach the statement and tests that inspect the source or enclosing code. If an edited function contains a lazy import, the selector schedules the full suite because the import can affect later tests.
+For an isolated `and`/`or` change in a profiled parser guard or a same-type literal edit in a local assignment or return statement, the selector includes tests that reach the statement and tests that inspect the source or enclosing code. If an edited function contains a lazy import, the selector schedules the full suite because the import can affect later tests.
+
+For an isolated SQL fixture edit, the selector skips readers of the standard fixture loaders when the filtered text is identical. Tests that read the raw file still run.
 
 `import_map.json.gz` records which tests use modules and which parser factories only create closures. The selector uses that map for same-type literal edits to those factory calls. For observed `SHOW_PARSERS` entries it can use exact calls recorded in the coverage map, with module-level selection when that trace is incomplete.
 

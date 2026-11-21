@@ -1,4 +1,4 @@
-"""Scope same-type local literal replacements to executed assignments."""
+"""Scope local literal edits to tests that reach the changed statements."""
 
 import ast
 
@@ -9,7 +9,7 @@ def supports_literal_profile(module):
     return module.startswith(("sqlglot.generators.", "sqlglot.optimizer.", "sqlglot.parsers."))
 
 
-class LiteralAssignments(ast.NodeTransformer):
+class LiteralStatements(ast.NodeTransformer):
     def __init__(self, path, instrument=False):
         self.path = path
         self.instrument = instrument
@@ -37,12 +37,15 @@ class LiteralAssignments(ast.NodeTransformer):
         return node
 
     def visit_Assign(self, node):
-        if not (
-            self.local_scope
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and isinstance(node.value, ast.Constant)
-        ):
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            return node
+        return self.visit_literal(node)
+
+    def visit_Return(self, node):
+        return self.visit_literal(node)
+
+    def visit_literal(self, node):
+        if not self.local_scope or not isinstance(node.value, ast.Constant):
             return node
         site = location(self.path, node)
         if not self.instrument:
@@ -61,7 +64,7 @@ class LiteralAssignments(ast.NodeTransformer):
 def changed_local_literals(path, source, updated):
     before = ast.parse(source.encode("utf-8"), path)
     after = ast.parse(updated.encode("utf-8"), path)
-    old, new = LiteralAssignments(path), LiteralAssignments(path)
+    old, new = LiteralStatements(path), LiteralStatements(path)
     old.visit(before)
     new.visit(after)
     if ast.dump(before) != ast.dump(after) or len(old.literals) != len(new.literals):
