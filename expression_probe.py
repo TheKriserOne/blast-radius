@@ -11,6 +11,70 @@ from dialect_probe import DialectProbe
 EXPRESSION_MODULE = "sqlglot.expressions.core"
 EXPRESSION_PATH = "sqlglot/expressions/core.py"
 _probe = None
+PLAIN_ARGUMENT_TYPES = {bool, int, float, complex, str, bytes, tuple, dict, set, frozenset}
+
+
+def class_attribute(cls, name):
+    for base in cls.__mro__:
+        namespace = vars(base)
+        if name in namespace:
+            return namespace[name]
+    return None
+
+
+def missing_argument(value):
+    if value is None:
+        return True
+    cls = type(value)
+    if cls is list:
+        return not value
+    if type(cls) is not type:
+        return None
+    if cls in PLAIN_ARGUMENT_TYPES:
+        return False
+    if any(
+        base is list or "__class__" in vars(base) or "__getattribute__" in vars(base)
+        for base in cls.__mro__ if base is not object
+    ):
+        return None
+    return False
+
+
+def missing_optional_arguments(expression, args_slot, dict_slot):
+    cls = type(expression)
+    if (
+        type(cls) is not type
+        or class_attribute(cls, "__getattribute__") is not object.__getattribute__
+        or class_attribute(cls, "__class__") is not object.__dict__["__class__"]
+        or class_attribute(cls, "args") is not args_slot
+        or class_attribute(cls, "__dict__") is not dict_slot
+    ):
+        return None
+    fields = dict_slot.__get__(expression)
+    if (
+        type(fields) is not dict or any(type(key) is not str for key in fields)
+        or "arg_types" in fields or "required_args" in fields
+    ):
+        return None
+    flags = class_attribute(cls, "arg_types")
+    required = class_attribute(cls, "required_args")
+    try:
+        arguments = args_slot.__get__(expression)
+    except AttributeError:
+        return None
+    if (
+        type(arguments) is not dict or type(flags) is not dict or type(required) is not set
+        or any(type(key) is not str for key in arguments)
+        or any(type(key) is not str or type(flag) is not bool for key, flag in flags.items())
+        or any(type(key) is not str for key in required)
+        or required != {key for key, flag in flags.items() if flag}
+    ):
+        return None
+    missing = [missing_argument(arguments.get(key)) for key in required]
+    # A changed required set can reorder multiple missing-argument errors.
+    if None in missing or missing.count(True) > 1:
+        return None
+    return {key for key, flag in flags.items() if not flag and missing_argument(arguments.get(key)) is not False}
 
 
 class ExpressionProbe:
@@ -28,6 +92,8 @@ class ExpressionProbe:
 
     def attach(self, module):
         original = module.Expression.error_messages
+        args_slot = module.Expression.__dict__["args"]
+        dict_slot = class_attribute(module.Expression, "__dict__")
         if (
             Path(original.__code__.co_filename).resolve() != self.source
             or original.__code__.co_qualname != "Expression.error_messages"
@@ -47,7 +113,15 @@ class ExpressionProbe:
                     if base.__module__.startswith("sqlglot.")
                 )
                 probe.tags_by_type[cls] = tags
-            probe.scope().update(tags)
+            dependencies = probe.scope()
+            dependencies.update(tags)
+            missing = missing_optional_arguments(self, args_slot, dict_slot)
+            for tag, _ in tags:
+                name = tag.removeprefix("@expr:")
+                if missing is None:
+                    dependencies.add((f"@expr-opaque:{name}", 0))
+                else:
+                    dependencies.update((f"@expr-missing:{name}:{key}", 0) for key in missing)
             return original(self, args)
 
         module.Expression.error_messages = track

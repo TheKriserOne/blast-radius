@@ -52,6 +52,7 @@ def start_trace(receipt, baseline):
             json.dump({
                 "pid": os.getpid(),
                 "expression_validation": expression_validation,
+                "argument_presence": expression_validation,
                 "factory_calls": factory_probe is not None,
                 "dependencies": sorted(dependencies),
             }, stream)

@@ -121,6 +121,7 @@ class Coverage:
                     process.poll() != 0
                     or trace["pid"] != process.pid
                     or not trace.get("expression_validation")
+                    or not trace.get("argument_presence")
                     or (self.factory_probe is not None and not trace.get("factory_calls"))
                 ):
                     raise ValueError("incomplete child trace")
@@ -186,6 +187,7 @@ class Coverage:
         path = self.output / f"{worker}.json"
         path.write_text(json.dumps({
             "expression_validation": self.expression_validation,
+            "argument_presence": self.expression_validation,
             "dialect_fields": self.expression_validation,
             "identity_comparisons": self.expression_validation,
             "guard_coverage": self.expression_validation,
@@ -214,6 +216,7 @@ def pack_coverage(directory, output):
     tests = {}
     child_tests = defaultdict(set)
     expression_validation = True
+    argument_presence = True
     dialect_fields = True
     identity_comparisons = True
     guard_coverage = True
@@ -222,6 +225,7 @@ def pack_coverage(directory, output):
     for path in directory.glob("*.json"):
         shard = json.loads(path.read_text())
         expression_validation &= shard.get("expression_validation") is True
+        argument_presence &= shard.get("argument_presence") is True
         dialect_fields &= shard.get("dialect_fields") is True
         identity_comparisons &= shard.get("identity_comparisons") is True
         guard_coverage &= shard.get("guard_coverage") is True
@@ -239,6 +243,7 @@ def pack_coverage(directory, output):
     dependency_numbers = {dependency: index for index, dependency in enumerate(dependency_table)}
     payload = {
         "expression_validation": bool(tests) and expression_validation,
+        "argument_presence": bool(tests) and argument_presence,
         "dialect_fields": bool(tests) and dialect_fields,
         "identity_comparisons": bool(tests) and identity_comparisons,
         "guard_coverage": bool(tests) and guard_coverage,

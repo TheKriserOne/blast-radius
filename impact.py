@@ -107,6 +107,7 @@ class Impact:
         with gzip.open(coverage_file, "rt", encoding="utf-8") as stream:
             coverage = json.load(stream)
         self.has_expression_validation = coverage.get("expression_validation", False)
+        self.has_argument_presence = coverage.get("argument_presence", False)
         self.has_dialect_fields = coverage.get("dialect_fields", False)
         self.has_identity_comparisons = coverage.get("identity_comparisons", False)
         self.has_guard_coverage = coverage.get("guard_coverage", False)
@@ -215,12 +216,17 @@ class Impact:
             or (path, 0) in self.collection
         ):
             return None
-        validators = changed_expression_validators(path, source, updated)
+        validators, additions = changed_expression_validators(path, source, updated)
         if not validators or validators & self.collection or not validators <= self.dependents.keys():
             return None
+        if self.has_argument_presence and additions:
+            classes = {tag.removeprefix("@expr:") for tag, _ in validators}
+            validators = {(f"@expr-opaque:{name}", 0) for name in classes} | {
+                (f"@expr-missing:{name}:{key}", 0) for name in classes for key in additions
+            }
         tests = set(self.dependents.get((path, 0), ()))
         for validator in validators:
-            tests.update(self.dependents[validator])
+            tests.update(self.dependents.get(validator, ()))
         return tests
 
     def tests_for_dialect_fields(self, path, source, updated):

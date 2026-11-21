@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from build_syntax import build_syntax
+from expression_probe import missing_optional_arguments
 from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filtered_dependency
 from identity_comparisons import pure_equivalent
@@ -18,7 +19,7 @@ class ImpactTest(unittest.TestCase):
         self, before, after, imports=None, collection=(), *,
         path="sqlglot/parsers/example.py", expression_validators=None, dialect_reads=None,
         identity_reads=None, factory_calls=None, guard_reads=None, literal_reads=None, fixture_reads=None,
-        cached_source=None, ordered_reads=None,
+        cached_source=None, ordered_reads=None, argument_presence=False,
     ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
@@ -30,6 +31,7 @@ class ImpactTest(unittest.TestCase):
         }
         if expression_validators is not None:
             coverage["expression_validation"] = True
+            coverage["argument_presence"] = argument_presence
             for test_id, dependencies in expression_validators.items():
                 coverage["tests"][test_id].extend(dependencies)
         if dialect_reads is not None:
@@ -187,6 +189,68 @@ class ImpactTest(unittest.TestCase):
             before, before.replace("'kind'", "'role'"),
             path=path, expression_validators=profiling,
         ))
+
+    def test_new_required_argument_selects_missing_and_opaque_validators(self):
+        path = "sqlglot/expressions/example.py"
+        before = "class Options(Expression):\n    arg_types = {'flag': False}\n"
+        after = before.replace("False", "True")
+        name = "sqlglot.expressions.example.Options"
+        validator = (f"@expr:{name}", 0)
+        options = {"path": path, "argument_presence": True}
+        for dependency in (f"@expr-missing:{name}:flag", f"@expr-opaque:{name}"):
+            self.assertEqual(self.select(before, after, expression_validators={
+                "dependent": [validator], "unrelated": [validator, (dependency, 0)],
+            }, **options), {8})
+        self.assertEqual(self.select(before, after, expression_validators={
+            "dependent": [validator], "unrelated": [validator, (path, 0)],
+        }, **options), {8})
+        self.assertEqual(self.select(after, before, expression_validators={
+            "dependent": [validator],
+        }, **options), {4})
+
+    def test_argument_presence_probe_keeps_custom_values_and_multiple_errors(self):
+        class Options:
+            __slots__ = ("args", "__dict__")
+            arg_types = {"first": True, "second": True, "flag": False}
+            required_args = {"first", "second"}
+
+        class CustomValue:
+            @property
+            def __class__(self):
+                raise AssertionError("probe called a custom getter")
+
+        class CustomOptions(Options):
+            @property
+            def args(self):
+                raise AssertionError("probe called a custom argument getter")
+
+        class CustomClass(Options):
+            @property
+            def __class__(self):
+                raise AssertionError("probe called a custom class getter")
+
+        class HiddenFields(Options):
+            @property
+            def __dict__(self):
+                raise AssertionError("probe called a custom fields getter")
+
+        slot = Options.__dict__["args"]
+        dict_slot = Options.__dict__["__dict__"]
+        expression = Options()
+        expression.args = {"first": 1, "second": 2, "flag": False}
+        self.assertEqual(missing_optional_arguments(expression, slot, dict_slot), set())
+        expression.args["flag"] = CustomValue()
+        self.assertEqual(missing_optional_arguments(expression, slot, dict_slot), {"flag"})
+        expression.args = {"flag": False}
+        self.assertIsNone(missing_optional_arguments(expression, slot, dict_slot))
+        present = {"first": 1, "second": 2, "flag": False}
+        for subtype in (CustomOptions, CustomClass, HiddenFields):
+            custom = subtype()
+            slot.__set__(custom, present)
+            self.assertIsNone(missing_optional_arguments(custom, slot, dict_slot))
+        expression.args = present
+        expression.required_args = {"first"}
+        self.assertIsNone(missing_optional_arguments(expression, slot, dict_slot))
 
     def test_week_offset_selects_readers_only_for_literal_values(self):
         path = "sqlglot/dialects/example.py"

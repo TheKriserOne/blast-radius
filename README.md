@@ -40,6 +40,8 @@ make check    # the output's format only
 
 `coverage.json.gz` contains per-test function and file dependencies captured on the pinned checkout. It also records expression validation, dialect week-offset reads, and numeric escape lookups by dictionary owner and key. The selector uses those reads for literal value changes that preserve the field's structure. It uses the full suite when an affected read runs during collection.
 
+When a flag makes an expression argument required, the selector includes tests that validated the expression with that argument missing. It also retains validations with custom behavior or multiple missing required arguments, since the change can reorder their errors.
+
 For an identity-to-equality edit at a profiled comparison, the selector includes tests with a different observed result, an unverified equality method, or direct access to the modified source or code. The baseline probe evaluates only verified pure comparisons.
 
 For an isolated `and`/`or` or `==`/`!=` change in a profiled guard, the selector includes tests that reach the condition. It uses the same approach for same-type literal edits in local assignments, return values, and direct arguments of returned calls. Both rules include tests that inspect the source or enclosing code. If an edited function contains a lazy import, the selector schedules the full suite because the import can affect later tests.

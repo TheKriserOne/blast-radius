@@ -35,7 +35,7 @@ def argument_structure(module):
             for key, value in zip(arguments.keys, arguments.values)
         ):
             continue
-        flags[definition.name] = tuple(value.value for value in arguments.values)
+        flags[definition.name] = {key.value: value.value for key, value in zip(arguments.keys, arguments.values)}
         for value in arguments.values:
             value.value = False
     return ast.dump(module), flags, copies
@@ -45,9 +45,15 @@ def changed_expression_validators(path, source, updated):
     before, original_flags, copies = argument_structure(ast.parse(source.encode("utf-8"), path))
     after, updated_flags, _ = argument_structure(ast.parse(updated.encode("utf-8"), path))
     if before != after or original_flags.keys() != updated_flags.keys():
-        return set()
+        return set(), set()
 
     changed = {name for name, flags in original_flags.items() if flags != updated_flags[name]}
+    flips = [
+        (key, old)
+        for name in changed
+        for key, old in original_flags[name].items()
+        if old != updated_flags[name][key]
+    ]
     pending = list(changed)
     while pending:
         source_class = pending.pop()
@@ -56,4 +62,5 @@ def changed_expression_validators(path, source, updated):
                 changed.add(name)
                 pending.append(name)
     module = path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
-    return {(f"@expr:{module}.{name}", 0) for name in changed}
+    additions = {key for key, _ in flips} if all(not old for _, old in flips) else set()
+    return {(f"@expr:{module}.{name}", 0) for name in changed}, additions
