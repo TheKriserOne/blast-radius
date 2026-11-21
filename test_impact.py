@@ -5,6 +5,7 @@ from difflib import unified_diff
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from build_syntax import build_syntax
 from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filtered_dependency
 from identity_comparisons import pure_equivalent
@@ -16,6 +17,7 @@ class ImpactTest(unittest.TestCase):
         self, before, after, imports=None, collection=(), *,
         path="sqlglot/parsers/example.py", expression_validators=None, dialect_reads=None,
         identity_reads=None, factory_calls=None, guard_reads=None, literal_reads=None, fixture_reads=None,
+        cached_source=None,
     ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
@@ -62,6 +64,9 @@ class ImpactTest(unittest.TestCase):
             root = Path(directory)
             source = root / path
             source.parent.mkdir(parents=True)
+            if cached_source is not None:
+                source.write_text(cached_source, encoding="utf-8")
+                build_syntax(root)
             source.write_text(before, encoding="utf-8")
             coverage_file = root / "coverage.json.gz"
             coverage_file.write_bytes(gzip.compress(json.dumps(coverage).encode("utf-8")))
@@ -74,6 +79,13 @@ class ImpactTest(unittest.TestCase):
     def test_encoding_comment_can_break_import(self):
         before = "# π\ndef transform(value):\n    return value\n"
         self.assertIsNone(self.select(before, "# coding: ascii\n" + before))
+
+    def test_cached_syntax_still_checks_source_and_patch(self):
+        before = "def check():\n    return True\n"
+        after = before.replace("True", "False")
+        self.assertEqual(self.select(before, after, cached_source=after), {4})
+        invalid = before.replace("    return", "    break\n    return")
+        self.assertIsNone(self.select(before, invalid, cached_source=before))
 
     def test_selects_callers_of_changed_lambda(self):
         before = "class Factory:\n    callback = lambda value: value + 1\n"

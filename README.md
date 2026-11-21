@@ -50,6 +50,8 @@ For an isolated SQL fixture edit, the selector skips readers of the standard fix
 
 Run `make imports` and then `make coverage` to regenerate the maps from the checked-in baseline data. Ordinary builds reuse both maps. Run `python3 -m unittest test_impact` to check patch classification.
 
+The Docker build saves syntax summaries for the pinned Python files. The selector loads each summary on demand and checks it against the source file before using it.
+
 ## Submit
 
 Push to a public GitHub repository with the `Dockerfile` at its top, then enter the repository and the commit hash on the track page. The final scores the commit you pick. If you pick none, your best practice submission counts.

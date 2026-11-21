@@ -3,8 +3,12 @@
 import ast
 import gzip
 import json
+import marshal
 import re
 from collections import defaultdict
+from hashlib import sha256
+from types import SimpleNamespace
+from zipfile import BadZipFile, ZipFile
 
 from dialect_fields import changed_dialect_fields
 from expression_arguments import changed_expression_validators
@@ -95,6 +99,10 @@ class Impact:
     def __init__(self, tests, coverage_file, baseline, import_map_file=None):
         self.baseline = baseline
         self.baseline_files = {}
+        try:
+            self.baseline_syntax = ZipFile(baseline / "syntax.zip")
+        except (OSError, BadZipFile):
+            self.baseline_syntax = None
         with gzip.open(coverage_file, "rt", encoding="utf-8") as stream:
             coverage = json.load(stream)
         self.has_expression_validation = coverage.get("expression_validation", False)
@@ -161,8 +169,18 @@ class Impact:
 
     def baseline_file(self, path):
         if path not in self.baseline_files:
-            source = (self.baseline / path).read_bytes().decode("utf-8")
-            self.baseline_files[path] = source, FunctionBodies(source, path)
+            raw = (self.baseline / path).read_bytes()
+            source = raw.decode("utf-8")
+            summary = None
+            if self.baseline_syntax is not None:
+                try:
+                    digest, structure, bodies = marshal.loads(self.baseline_syntax.read(path))
+                except (BadZipFile, EOFError, KeyError, ValueError):
+                    pass
+                else:
+                    if digest == sha256(raw).digest():
+                        summary = SimpleNamespace(structure=structure, bodies=bodies)
+            self.baseline_files[path] = source, summary or FunctionBodies(source, path)
         return self.baseline_files[path]
 
     def is_parser_factory_edit(self, path, source, updated):
