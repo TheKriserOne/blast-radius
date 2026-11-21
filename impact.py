@@ -6,6 +6,7 @@ import json
 import re
 from collections import defaultdict
 
+from dialect_fields import changed_dialect_fields
 from expression_arguments import changed_expression_validators
 from factory_changes import factory_argument_structure
 
@@ -89,6 +90,7 @@ class Impact:
         with gzip.open(coverage_file, "rt", encoding="utf-8") as stream:
             coverage = json.load(stream)
         self.has_expression_validation = coverage.get("expression_validation", False)
+        self.has_dialect_fields = coverage.get("dialect_fields", False)
         self.collection = set(map(tuple, coverage["collection"]))
         self.collection_files = {path for path, _ in self.collection}
 
@@ -118,9 +120,13 @@ class Impact:
                     self.dependents[path, line].add(test["number"])
 
         self.lines = defaultdict(set)
-        for path, line in self.dependents.keys() | self.collection:
+        all_dependencies = self.dependents.keys() | self.collection
+        for path, line in all_dependencies:
             if line:
                 self.lines[path].add(line)
+        self.unknown_numeric_reads = {
+            dependency for dependency in all_dependencies if dependency[0].startswith("@numeric-unknown:")
+        }
 
     def baseline_file(self, path):
         if path not in self.baseline_files:
@@ -163,6 +169,27 @@ class Impact:
             tests.update(self.dependents[validator])
         return tests
 
+    def tests_for_dialect_fields(self, path, source, updated):
+        if not self.has_dialect_fields or not path.startswith("sqlglot/dialects/"):
+            return None
+        fields = changed_dialect_fields(path, source, updated)
+        if not fields:
+            return None
+        dependencies = {(path, 0)}
+        for field in fields:
+            dependencies.add((field, 0))
+            if field.startswith("@numeric:"):
+                _, owner, _ = field.split(":", 2)
+                observed_owner = (f"@numeric-owner:{owner}", 0)
+                if observed_owner not in self.dependents and observed_owner not in self.collection:
+                    return None
+                dependencies.update(self.unknown_numeric_reads)
+            elif (field, 0) not in self.dependents:
+                return None
+        if dependencies & self.collection:
+            return None
+        return set().union(*(self.dependents.get(dependency, ()) for dependency in dependencies))
+
     def select(self, patch):
         """Return affected test numbers, or None when the full suite is needed."""
         changes = re.split(r"(?m)^diff --git ", patch)
@@ -190,6 +217,9 @@ class Impact:
                         expression_tests = self.tests_for_expression_arguments(path, source, updated)
                         if expression_tests is not None:
                             return selected | expression_tests
+                        dialect_tests = self.tests_for_dialect_fields(path, source, updated)
+                        if dialect_tests is not None:
+                            return selected | dialect_tests
                         if self.is_parser_factory_edit(path, source, updated):
                             return selected | self.tests_for_module(path)
                         return None

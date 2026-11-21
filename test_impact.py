@@ -11,7 +11,7 @@ from impact import Impact
 class ImpactTest(unittest.TestCase):
     def select(
         self, before, after, imports=None, collection=(), *,
-        path="sqlglot/parsers/example.py", expression_validators=None,
+        path="sqlglot/parsers/example.py", expression_validators=None, dialect_reads=None,
     ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
@@ -24,6 +24,10 @@ class ImpactTest(unittest.TestCase):
         if expression_validators is not None:
             coverage["expression_validation"] = True
             for test_id, dependencies in expression_validators.items():
+                coverage["tests"][test_id].extend(dependencies)
+        if dialect_reads is not None:
+            coverage["dialect_fields"] = True
+            for test_id, dependencies in dialect_reads.items():
                 coverage["tests"][test_id].extend(dependencies)
         diff = f"diff --git a/{path} b/{path}\n" + "".join(
             unified_diff(
@@ -106,3 +110,39 @@ class ImpactTest(unittest.TestCase):
             before, before.replace("'kind'", "'role'"),
             path=path, expression_validators=profiling,
         ))
+
+    def test_week_offset_selects_readers_only_for_literal_values(self):
+        path = "sqlglot/dialects/example.py"
+        before = "class Example(Dialect):\n    WEEK_OFFSET = -1\n"
+        reads = {"dependent": [("@week:sqlglot.dialects.example.Example", 0)]}
+        self.assertEqual(self.select(
+            before, before.replace("-1", "2"), path=path, dialect_reads=reads,
+        ), {4})
+        self.assertIsNone(self.select(
+            before, before.replace("-1", "int('2')"), path=path, dialect_reads=reads,
+        ))
+
+    def test_numeric_escape_selects_exact_key_and_unrecognized_readers(self):
+        path = "sqlglot/dialects/example.py"
+        before = (
+            "class Example(Dialect):\n"
+            "    class Tokenizer:\n"
+            "        NUMERIC_ESCAPES = {'u': (16, 4, 4, 65535)}\n"
+        )
+        after = before.replace("(16,", "(17,")
+        owner = "sqlglot.dialects.example.Example.Tokenizer"
+        reads = {
+            "dependent": [(f"@numeric-owner:{owner}", 0), (f"@numeric:{owner}:u", 0)],
+            "unrelated": [(f"@numeric:{owner}:x", 0)],
+        }
+        self.assertEqual(self.select(before, after, path=path, dialect_reads=reads), {4})
+        reads["unrelated"] = [("@numeric-unknown:x", 0)]
+        self.assertEqual(self.select(before, after, path=path, dialect_reads=reads), {4, 8})
+        self.assertIsNone(self.select(
+            before, before.replace("(16, 4, 4, 65535)", "0"), path=path, dialect_reads=reads,
+        ))
+        self.assertIsNone(self.select(
+            before, before.replace("'u'", "'x'"), path=path, dialect_reads=reads,
+        ))
+        reads = {"dependent": [(f"@numeric-owner:{owner}", 0)]}
+        self.assertEqual(self.select(before, after, path=path, dialect_reads=reads), set())

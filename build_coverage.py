@@ -180,6 +180,7 @@ class Coverage:
         path = self.output / f"{worker}.json"
         path.write_text(json.dumps({
             "expression_validation": self.expression_validation,
+            "dialect_fields": self.expression_validation,
             "collection": sorted(self.collection),
             "tests": {
                 nodeid: sorted(dependencies | self.shared[nodeid.split("::", 1)[0]])
@@ -203,9 +204,11 @@ def pack_coverage(directory, output):
     tests = {}
     child_tests = defaultdict(set)
     expression_validation = True
+    dialect_fields = True
     for path in directory.glob("*.json"):
         shard = json.loads(path.read_text())
         expression_validation &= shard.get("expression_validation") is True
+        dialect_fields &= shard.get("dialect_fields") is True
         collection.update(map(tuple, shard["collection"]))
         for nodeid, dependencies in shard["tests"].items():
             if path.name.startswith("child-"):
@@ -215,6 +218,7 @@ def pack_coverage(directory, output):
 
     payload = {
         "expression_validation": bool(tests) and expression_validation,
+        "dialect_fields": bool(tests) and dialect_fields,
         "collection": sorted(collection),
         "tests": {
             nodeid: sorted(dependencies | child_tests[nodeid])

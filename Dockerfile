@@ -14,7 +14,7 @@ COPY requirements.lock /tmp/requirements.lock
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.lock
 
 FROM test-env AS coverage
-COPY build_coverage.py expression_probe.py sitecustomize.py /app/
+COPY build_coverage.py dialect_probe.py expression_probe.py sitecustomize.py /app/
 RUN mkdir /coverage \
     && SKIP_INTEGRATION=0 PYTHONPATH=/app BLAST_RADIUS_COVERAGE_DIR=/coverage \
         python -m pytest -q -n 4 --dist loadfile -p build_coverage tests \
@@ -26,5 +26,5 @@ RUN python /app/build_import_map.py /app/coverage.json.gz /import_map.json.gz
 
 FROM base
 COPY --from=checkout /baseline/sqlglot /app/baseline/sqlglot
-COPY expression_arguments.py factory_changes.py impact.py selector.py coverage.json.gz import_map.json.gz /app/
+COPY dialect_fields.py expression_arguments.py factory_changes.py impact.py selector.py coverage.json.gz import_map.json.gz /app/
 CMD ["python", "/app/selector.py"]

@@ -5,6 +5,8 @@ from functools import wraps
 from importlib.machinery import PathFinder
 from pathlib import Path
 
+from dialect_probe import DialectProbe
+
 
 EXPRESSION_MODULE = "sqlglot.expressions.core"
 EXPRESSION_PATH = "sqlglot/expressions/core.py"
@@ -22,6 +24,7 @@ class ExpressionProbe:
         if loaded is not None:
             self.attach(loaded)
         sys.meta_path.insert(0, self)
+        DialectProbe(baseline, lambda: self.scope())
 
     def attach(self, module):
         original = module.Expression.error_messages

@@ -44,7 +44,7 @@ def argument_structure(module):
 def changed_expression_validators(path, source, updated):
     before, original_flags, copies = argument_structure(ast.parse(source.encode("utf-8"), path))
     after, updated_flags, _ = argument_structure(ast.parse(updated.encode("utf-8"), path))
-    if before != after:
+    if before != after or original_flags.keys() != updated_flags.keys():
         return set()
 
     changed = {name for name, flags in original_flags.items() if flags != updated_flags[name]}
