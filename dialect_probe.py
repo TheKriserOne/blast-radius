@@ -120,8 +120,11 @@ class DialectProbe:
             dependencies.add((f"@numeric-owner:{owner}", 0))
             if value is not None:
                 dependencies.add((f"@numeric:{owner}:{key}", 0))
-        if not owners and value is not None:
-            dependencies.add((f"@numeric-unknown:{key}", 0))
+            else:
+                dependencies.add((f"@numeric-miss:{owner}:{key}", 0))
+        if not owners:
+            kind = "@numeric-unknown" if value is not None else "@numeric-unknown-miss"
+            dependencies.add((f"{kind}:{key}", 0))
         return value
 
     def guard(self, site):
@@ -178,6 +181,8 @@ class DialectProbe:
             module.__dict__["_blast_radius_literal"] = self.literal_assignment
             module.__dict__["_blast_radius_ordered"] = self.ordered
             self.scope().update(comparisons.sites | guards.sites | literals.sites | ordered.sites)
+            if name == "sqlglot.tokenizer_core":
+                self.scope().add(("@numeric-missing-keys", 0))
             exec(code, module.__dict__)
             attach_factory_calls(module)
 

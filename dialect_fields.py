@@ -1,4 +1,4 @@
-"""Recognize value-only edits to traced dialect and tokenizer fields."""
+"""Recognize edits to traced dialect and tokenizer fields."""
 
 import ast
 
@@ -60,7 +60,8 @@ def field_structure(module, module_name):
                 if escapes:
                     for key, arguments in escapes.items():
                         values[f"@numeric:{name}:{key}"] = arguments
-                    statement.value.values = [ast.Constant(value=0) for _ in escapes]
+                    # Class creation and generation inspect these keys without a lookup probe.
+                    statement.value = ast.Constant(value=tuple(key for key in ("x", "0", "u") if key in escapes))
     return ast.dump(module), values
 
 
@@ -68,6 +69,10 @@ def changed_dialect_fields(path, source, updated):
     module = path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
     before, original_fields = field_structure(ast.parse(source.encode("utf-8"), path), module)
     after, updated_fields = field_structure(ast.parse(updated.encode("utf-8"), path), module)
-    if before != after or original_fields.keys() != updated_fields.keys():
-        return set()
-    return {tag for tag, value in original_fields.items() if value != updated_fields[tag]}
+    if before != after:
+        return set(), set()
+    fields = {
+        tag for tag in original_fields.keys() | updated_fields.keys()
+        if original_fields.get(tag) != updated_fields.get(tag)
+    }
+    return fields, updated_fields.keys() - original_fields.keys()

@@ -220,6 +220,7 @@ class Impact:
         self.unknown_numeric_reads = {
             dependency for dependency in all_dependencies if dependency[0].startswith("@numeric-unknown:")
         }
+        self.has_numeric_missing_keys = ("@numeric-missing-keys", 0) in all_dependencies
         self.identity_sites = {
             path.removeprefix("@identity-site:") for path, _ in all_dependencies
             if path.startswith("@identity-site:")
@@ -305,18 +306,21 @@ class Impact:
     def tests_for_dialect_fields(self, path, source, updated):
         if not self.has_dialect_fields or not path.startswith("sqlglot/dialects/"):
             return None
-        fields = changed_dialect_fields(path, source, updated)
-        if not fields:
+        fields, added = changed_dialect_fields(path, source, updated)
+        if not fields or (added and not self.has_numeric_missing_keys):
             return None
         dependencies = {(path, 0)}
         for field in fields:
             dependencies.add((field, 0))
             if field.startswith("@numeric:"):
-                _, owner, _ = field.split(":", 2)
+                _, owner, key = field.split(":", 2)
                 observed_owner = (f"@numeric-owner:{owner}", 0)
                 if observed_owner not in self.dependents and observed_owner not in self.collection:
                     return None
                 dependencies.update(self.unknown_numeric_reads)
+                if field in added:
+                    dependencies.add((f"@numeric-miss:{owner}:{key}", 0))
+                    dependencies.add((f"@numeric-unknown-miss:{key}", 0))
             elif (field, 0) not in self.dependents:
                 return None
         if dependencies & self.collection:

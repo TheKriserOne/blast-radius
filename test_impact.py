@@ -399,6 +399,30 @@ class ImpactTest(unittest.TestCase):
         reads = {"dependent": [(f"@numeric-owner:{owner}", 0)]}
         self.assertEqual(self.select(before, after, path=path, dialect_reads=reads), set())
 
+    def test_numeric_escape_key_rename_selects_hits_and_misses(self):
+        path = "sqlglot/dialects/example.py"
+        before = (
+            "class Example:\n"
+            "    class Tokenizer:\n"
+            "        NUMERIC_ESCAPES = {'U': (16, 8, 8, 0x10FFFF)}\n"
+        )
+        after = before.replace("'U'", "'V'")
+        owner = "sqlglot.dialects.example.Example.Tokenizer"
+        hit = (f"@numeric:{owner}:U", 0)
+        miss = (f"@numeric-miss:{owner}:V", 0)
+        capability = ("@numeric-missing-keys", 0)
+        reads = {"dependent": [(f"@numeric-owner:{owner}", 0), hit], "unrelated": [miss]}
+        self.assertIsNone(self.select(before, after, path=path, dialect_reads=reads))
+        options = {"path": path, "collection": [capability], "dialect_reads": reads}
+        self.assertEqual(self.select(before, after, **options), {4, 8})
+        self.assertIsNone(self.select(before, after.replace("'V'", "'x'"), **options))
+        self.assertIsNone(self.select(before, before.replace("{'U': (16, 8, 8, 0x10FFFF)}", "{}"), **options))
+        self.assertIsNone(self.select(before, after, path=path, collection=[capability, miss], dialect_reads=reads))
+        reads["unrelated"] = [("@numeric-unknown-miss:V", 0)]
+        self.assertEqual(self.select(before, after, **options), {4, 8})
+        reads["unrelated"] = [("@numeric-unknown-miss:W", 0)]
+        self.assertEqual(self.select(before, after, **options), {4})
+
     def test_identity_rewrite_keeps_uncertified_tests_and_code_readers(self):
         path = "sqlglot/executor/example.py"
         before = "def check(value):\n    return value is None\n"

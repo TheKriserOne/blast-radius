@@ -38,7 +38,7 @@ make check    # the output's format only
 
 `sample/answers.json` lists the tests each sample commit breaks and the kind of change it is. The practice and final commits are hidden, and so is everything your program prints when it runs on them. A rejected submission tells you which rule it broke and nothing more, so reproduce problems here.
 
-`coverage.json.gz` contains per-test function and file dependencies captured on the pinned checkout. It also records expression validation, dialect week-offset reads, and numeric escape lookups by dictionary owner and key. The selector uses those reads for literal value changes that preserve the field's structure. It uses the full suite when an affected read runs during collection.
+`coverage.json.gz` contains per-test function and file dependencies captured on the pinned checkout. It also records expression validation, dialect week-offset reads, and numeric escape lookups by dictionary owner and key. The selector uses successful and missed lookups to scope escape key edits when the table stays nonempty and keeps the same `x`, `0`, and `u` membership. It uses the full suite when an affected read runs during collection.
 
 When a flag makes an expression argument required, the selector includes tests that validated the expression with that argument missing. It also retains validations with custom behavior or multiple missing required arguments, since the change can reorder their errors.
 
