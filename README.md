@@ -46,7 +46,7 @@ For an identity-to-equality edit at a profiled comparison, the selector includes
 
 For an isolated `and`/`or` or `==`/`!=` change, or an added or removed leading `not` in a profiled guard, the selector includes tests that reach the condition. It uses the same approach for same-type literal edits in local assignments, return values, and direct arguments of returned calls. Both rules include tests that inspect the source or enclosing code. If an edited function contains a lazy import, the selector schedules the full suite because the import can affect later tests.
 
-For a strict-to-inclusive comparison edit or its reverse, the selector checks where the operands were equal. It uses that evidence for comparisons against literal integers or integer tuples with verified operand types. It keeps function-level coverage when a test uses an unverified operand.
+For a strict-to-inclusive comparison edit or its reverse, the selector checks where the operands were equal. When a literal integer or integer tuple threshold changes, it checks which observed operands would get a different result. It keeps function-level coverage when a test uses an unverified operand.
 
 The selector compares the standard SQL fixture loaders' input, expected output, and ordered metadata. It can also apply single-source selection to a mixed patch when every other edit is an equivalent fixture with no raw readers.
 

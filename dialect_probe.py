@@ -130,8 +130,8 @@ class DialectProbe:
     def literal_assignment(self, site):
         self.scope().add((f"@literal-read:{site}", 0))
 
-    def ordered(self, left, right, operation, site):
-        return observe_order(self.scope(), left, right, operation, site)
+    def ordered(self, left, right, operation, site, side):
+        return observe_order(self.scope(), left, right, operation, site, side)
 
     def find_spec(self, name, path=None, target=None):
         identity_profile = supports_identity_profile(name)

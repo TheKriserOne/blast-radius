@@ -4,6 +4,7 @@ import unittest
 from difflib import unified_diff
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from build_syntax import build_syntax
 from expression_arguments import possible_argument_classes
@@ -530,6 +531,60 @@ class ImpactTest(unittest.TestCase):
         self.assertEqual(self.select(before, after, ordered_reads={"unrelated": [unsafe]}, **options), {4, 8})
         self.assertEqual(self.select(before, after.replace("23", "24"), **options), {4})
         self.assertIsNone(self.select(before, after, collection=[registration, boundary], path=path))
+
+    def test_ordered_threshold_edit_selects_operands_whose_result_changes(self):
+        path = "sqlglot/generators/example.py"
+        before = "def check(value):\n    return value > 29\n"
+        after = before.replace("29", "30")
+        site = f"{path}:2:11"
+        registration = [(f"@ordered-site:{site}", 2), (f"@ordered-value-site:{site}", 0)]
+        boundary = (f"@ordered-value:{site}:0x1d", 0)
+        crosses = (f"@ordered-value:{site}:0x1e", 0)
+        unsafe = (f"@ordered-unsafe:{site}", 0)
+        reads = {"dependent": [boundary], "unrelated": [crosses]}
+        self.assertEqual(self.select(before, after, path=path, collection=registration, ordered_reads=reads), {8})
+        self.assertEqual(
+            self.select(before, after.replace(">", ">="), path=path, collection=registration, ordered_reads=reads),
+            set(),
+        )
+        self.assertEqual(self.select(before, after, path=path, collection=registration[:1], ordered_reads=reads), {4})
+        self.assertIsNone(self.select(before, after, path=path, collection=[*registration, crosses]))
+        for reader in ((path, 0), (f"@identity-code:{path}:1", 0)):
+            self.assertIsNone(self.select(before, after, path=path, collection=[*registration, reader]))
+        reads["unrelated"].append(unsafe)
+        self.assertEqual(self.select(before, after, path=path, collection=registration, ordered_reads=reads), {4, 8})
+
+    def test_ordered_threshold_on_left_replays_signed_tuples(self):
+        path = "sqlglot/generators/example.py"
+        before = "def check(version):\n    return (\n        -3, 0,\n    ) > version\n"
+        after = before.replace("    )", "        1,\n    )")
+        site = f"{path}:2:11"
+        registration = [(f"@ordered-site:{site}", 4), (f"@ordered-value-site:{site}", 0)]
+        reads = {"dependent": set(), "unrelated": set()}
+        self.assertFalse(observe_order(reads["unrelated"], (-3, 0), (-3, 0), "gt", site, 0))
+        self.assertTrue(observe_order(reads["dependent"], (-3, 0), (), "gt", site, 0))
+        self.assertEqual(self.select(before, after, path=path, collection=registration, ordered_reads=reads), {8})
+
+    def test_ordered_comparison_scan_skips_other_lines_in_its_function(self):
+        path = "sqlglot/generators/example.py"
+        before = "def check(value):\n    value = value + 1\n    return value > 29\n"
+        after = before.replace("+ 1", "+ 2")
+        with patch("impact.changed_ordered_sites") as scan:
+            self.assertEqual(self.select(before, after, path=path, collection=[(f"@ordered-site:{path}:3:11", 3)]), {4})
+        scan.assert_not_called()
+
+    def test_ordered_comparison_keeps_code_readers_when_edit_starts_outside_span(self):
+        path = "sqlglot/generators/example.py"
+        before = "def check(value):\n    return (\n        # bound\n        3 > value\n    )\n"
+        after = before.replace("# bound", "-")
+        site = f"{path}:4:8"
+        registration = [(f"@ordered-site:{site}", 4), (f"@ordered-value-site:{site}", 0)]
+        reader = (f"@identity-code:{path}:1", 0)
+        self.assertEqual(
+            self.select(before, after, path=path, collection=registration, ordered_reads={"unrelated": [reader]}),
+            {8},
+        )
+        self.assertIsNone(self.select(before, after, path=path, collection=[*registration, reader]))
 
     def test_ordered_probe_preserves_original_comparison(self):
         calls = []

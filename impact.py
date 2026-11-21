@@ -18,7 +18,7 @@ from fixture_reads import filter_comments, filtered_dependency, fixture_pairs, p
 from guard_comparisons import changed_guards, supports_guard_profile
 from identity_comparisons import changed_identity_sites, supports_identity_profile
 from literal_statements import changed_local_literals, supports_literal_profile
-from ordered_comparisons import changed_ordered_sites, supports_ordered_profile
+from ordered_comparisons import changed_ordered_sites, threshold_changes_result
 
 FILE_HEADER = re.compile(
     r"a/([\w./-]+) b/\1\n(?:index [^\n]*\n)?--- a/\1\n\+\+\+ b/\1\n(?=@@ )",
@@ -62,7 +62,7 @@ def hunk_lines(body):
         line = following
 
 
-def apply_hunks(source, diff):
+def apply_hunks(source, diff, touched_lines=None):
     """Apply Git text hunks to the original source, checking old context."""
     original = physical_lines(source)
     updated = []
@@ -84,7 +84,15 @@ def apply_hunks(source, diff):
         if new_start != len(updated):
             raise ValueError("invalid new hunk range")
         position = start
+        previous_operation = " "
         for operation, line in hunk_lines(hunk[header.end():]):
+            if touched_lines is not None:
+                if operation == "-":
+                    touched_lines.add(position + 1)
+                elif operation == "+" and previous_operation == " ":
+                    # Insertions can extend an expression on either side.
+                    touched_lines.update((position, position + 1))
+            previous_operation = operation
             if operation in " -":
                 if position >= start + count or original[position] != line:
                     raise ValueError("hunk does not match baseline")
@@ -187,10 +195,27 @@ class Impact:
                 self.dependents[decode_dependency(alias)] = tests_for_dependency
 
         self.lines = defaultdict(set)
+        self.ordered_sites = set()
+        self.ordered_spans = defaultdict(list)
+        self.ordered_value_sites = set()
+        self.ordered_values = defaultdict(list)
+        self.code_read_files = set()
         all_dependencies = self.dependents.keys() | self.collection
         for path, line in all_dependencies:
-            if line:
+            if path.startswith("@ordered-site:"):
+                site = path.removeprefix("@ordered-site:")
+                file, lineno, _ = site.rsplit(":", 2)
+                self.ordered_sites.add(site)
+                self.ordered_spans[file].append((int(lineno), line))
+            elif line:
                 self.lines[path].add(line)
+            elif path.startswith("@ordered-value-site:"):
+                self.ordered_value_sites.add(path.removeprefix("@ordered-value-site:"))
+            elif path.startswith("@ordered-value:"):
+                site, token = path.removeprefix("@ordered-value:").rsplit(":", 1)
+                self.ordered_values[site].append((token, (path, line)))
+            elif path.startswith("@identity-code:"):
+                self.code_read_files.add(path.removeprefix("@identity-code:").rsplit(":", 1)[0])
         self.unknown_numeric_reads = {
             dependency for dependency in all_dependencies if dependency[0].startswith("@numeric-unknown:")
         }
@@ -205,10 +230,6 @@ class Impact:
         self.literal_sites = {
             path.removeprefix("@literal-site:") for path, _ in all_dependencies
             if path.startswith("@literal-site:")
-        }
-        self.ordered_sites = {
-            path.removeprefix("@ordered-site:") for path, _ in all_dependencies
-            if path.startswith("@ordered-site:")
         }
         self.factory_evidence = {
             dep for dep in all_dependencies if dep[0].startswith("@factory:")
@@ -315,19 +336,34 @@ class Impact:
             | {(f"@guard-read:{site}", 0) for site in sites}
         )
 
-    def ordered_dependencies(self, path, source, updated, changed_ranges):
-        if not self.ordered_sites or not supports_ordered_profile(path.replace("/", ".")):
+    def ordered_dependencies(self, path, source, updated, changed_ranges, touched_lines):
+        if not any(
+            any(start <= line <= end for line in touched_lines)
+            if end and path not in self.code_read_files
+            else any(first <= start <= last for first, last in changed_ranges)
+            for start, end in self.ordered_spans[path]
+        ):
             return None
-        sites, code_lines = changed_ordered_sites(path, source, updated)
-        if not sites or not sites <= self.ordered_sites:
+        changes, code_lines = changed_ordered_sites(path, source, updated)
+        if not changes or not changes.keys() <= self.ordered_sites:
             return None
+        unsafe = {(f"@ordered-unsafe:{site}", 0) for site in changes}
         dependencies = (
             {(path, 0)}
             | {(f"@identity-code:{path}:{line}", 0) for line in code_lines}
-            | {(f"@ordered-boundary:{site}", 0) for site in sites}
-            | {(f"@ordered-unsafe:{site}", 0) for site in sites}
+            | unsafe
         )
-        if any((f"@ordered-unsafe:{site}", 0) in self.dependents for site in sites):
+        for site, (original, replacement) in changes.items():
+            if original[2] == replacement[2]:
+                dependencies.add((f"@ordered-boundary:{site}", 0))
+            elif site in self.ordered_value_sites:
+                dependencies.update(
+                    dependency for token, dependency in self.ordered_values.get(site, ())
+                    if threshold_changes_result(token, original, replacement)
+                )
+            else:
+                return None
+        if any(dependency in self.dependents for dependency in unsafe):
             # Fall back to callers of the changed functions, retaining code readers.
             dependencies.update(
                 (path, line)
@@ -420,7 +456,8 @@ class Impact:
             if path.startswith("sqlglot/") and path.endswith(".py"):
                 try:
                     source, before = self.baseline_file(path)
-                    updated = apply_hunks(source, hunks)
+                    touched_lines = set() if isolated and path in self.ordered_spans else None
+                    updated = apply_hunks(source, hunks, touched_lines)
                     after = FunctionBodies(updated, path)
                     same_structure = before.structure == after.structure
                     changed_ranges = []
@@ -439,8 +476,8 @@ class Impact:
                                 possible_guard_edit = mask_guard_operators(body) == mask_guard_operators(new_body)
                     if isolated and (changed_ranges or not same_structure):
                         profiled_deps = self.identity_dependencies(path, source, updated)
-                        if profiled_deps is None and same_structure and ("<=" in hunks or ">=" in hunks):
-                            profiled_deps = self.ordered_dependencies(path, source, updated, changed_ranges)
+                        if profiled_deps is None and same_structure and touched_lines:
+                            profiled_deps = self.ordered_dependencies(path, source, updated, changed_ranges, touched_lines)
                         if profiled_deps is None and same_structure and possible_guard_edit:
                             profiled_deps = self.guard_dependencies(path, source, updated)
                         if profiled_deps is None and same_structure:

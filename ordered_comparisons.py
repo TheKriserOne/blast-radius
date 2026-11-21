@@ -1,4 +1,4 @@
-"""Scope strict/inclusive edits to observed integer comparison boundaries."""
+"""Scope ordered comparison edits to observed integer operands."""
 
 import ast
 import operator
@@ -15,15 +15,19 @@ def supports_ordered_profile(module):
 
 
 def integer_literal(node):
+    sign = 1
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        sign = -1 if isinstance(node.op, ast.USub) else 1
         node = node.operand
-    return isinstance(node, ast.Constant) and type(node.value) is int
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return sign * node.value
 
 
 def literal_threshold(node):
-    return integer_literal(node) or (
-        isinstance(node, ast.Tuple) and all(integer_literal(item) for item in node.elts)
-    )
+    if isinstance(node, ast.Tuple):
+        values = tuple(map(integer_literal, node.elts))
+        return values if None not in values else None
+    return integer_literal(node)
 
 
 class OrderedComparisons(ast.NodeTransformer):
@@ -31,7 +35,7 @@ class OrderedComparisons(ast.NodeTransformer):
         self.path = path
         self.instrument = instrument
         self.local_scope = False
-        self.operators = {}
+        self.comparisons = {}
         self.sites = set()
 
     def visit_FunctionDef(self, node):
@@ -58,24 +62,39 @@ class OrderedComparisons(ast.NodeTransformer):
         return node
 
     def visit_Compare(self, node):
-        site = location(self.path, node)
-        candidate = (
-            self.local_scope and len(node.ops) == 1
-            and type(node.ops[0]) in OPERATOR_NAMES
-            and (literal_threshold(node.left) or literal_threshold(node.comparators[0]))
-        )
+        if not self.local_scope or len(node.ops) != 1 or type(node.ops[0]) not in OPERATOR_NAMES:
+            return self.generic_visit(node)
+        left = literal_threshold(node.left)
+        right = literal_threshold(node.comparators[0])
         self.generic_visit(node)
-        if not candidate:
+        if left is None and right is None:
             return node
+        site = location(self.path, node)
         operation = OPERATOR_NAMES[type(node.ops[0])]
+        side, threshold = None, None
+        if left is None:
+            side, threshold = 1, right
+        elif right is None:
+            side, threshold = 0, left
         if not self.instrument:
-            self.operators[site] = operation
+            self.comparisons[site] = operation, side, threshold
             node.ops[0] = ast.Lt() if operation.startswith("l") else ast.Gt()
+            if side is not None:
+                placeholder = ast.Constant(value=() if type(threshold) is tuple else 0)
+                if side == 0:
+                    node.left = placeholder
+                else:
+                    node.comparators[0] = placeholder
             return node
-        self.sites.add((f"@ordered-site:{site}", 0))
+        self.sites.add((f"@ordered-site:{site}", node.end_lineno))
+        if side is not None:
+            self.sites.add((f"@ordered-value-site:{site}", 0))
         return ast.copy_location(ast.Call(
             func=ast.Name(id="_blast_radius_ordered", ctx=ast.Load()),
-            args=[node.left, node.comparators[0], ast.Constant(value=operation), ast.Constant(value=site)],
+            args=[
+                node.left, node.comparators[0], ast.Constant(value=operation),
+                ast.Constant(value=site), ast.Constant(value=side),
+            ],
             keywords=[],
         ), node)
 
@@ -86,16 +105,30 @@ def changed_ordered_sites(path, source, updated):
     old, new = OrderedComparisons(path), OrderedComparisons(path)
     old.visit(before)
     new.visit(after)
-    if ast.dump(before) != ast.dump(after) or len(old.operators) != len(new.operators):
-        return set(), set()
-    changed = {
-        site for (site, operation), replacement in zip(old.operators.items(), new.operators.values())
-        if operation != replacement
-    }
+    if ast.dump(before) != ast.dump(after) or len(old.comparisons) != len(new.comparisons):
+        return {}, set()
+    changed = {}
+    for (site, original), replacement in zip(old.comparisons.items(), new.comparisons.values()):
+        if original[1] != replacement[1]:
+            return {}, set()
+        if original != replacement:
+            changed[site] = original, replacement
     return changed, enclosing_code_lines(before, changed)
 
 
-def observe_order(scope, left, right, operation, site):
+def threshold_changes_result(token, original, replacement):
+    old_op, side, old_threshold = original
+    new_op, _, new_threshold = replacement
+    if type(old_threshold) is tuple:
+        value = tuple(int(item, 16) for item in token.split(",")) if token else ()
+    else:
+        value = int(token, 16)
+    if side == 0:
+        return OPERATORS[old_op](old_threshold, value) != OPERATORS[new_op](new_threshold, value)
+    return OPERATORS[old_op](value, old_threshold) != OPERATORS[new_op](value, new_threshold)
+
+
+def observe_order(scope, left, right, operation, site, side=None):
     left_type, right_type = type(left), type(right)
     pure = left_type is right_type is int or (
         left_type is right_type is tuple
@@ -104,6 +137,11 @@ def observe_order(scope, left, right, operation, site):
     )
     if not pure:
         scope.add((f"@ordered-unsafe:{site}", 0))
-    elif left == right:
-        scope.add((f"@ordered-boundary:{site}", 0))
+    else:
+        if left == right:
+            scope.add((f"@ordered-boundary:{site}", 0))
+        if side is not None:
+            value = right if side == 0 else left
+            token = hex(value) if type(value) is int else ",".join(map(hex, value))
+            scope.add((f"@ordered-value:{site}:{token}", 0))
     return OPERATORS[operation](left, right)
