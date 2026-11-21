@@ -28,6 +28,11 @@ HUNK_HEADER = re.compile(r"@@ -(\d+)(?:,(\d+))? \+\d+(?:,(\d+))? @@[^\n]*\n")
 UNTRACED = ("*", 0)
 
 
+def mask_guard_operators(body):
+    """Coarse normalization used only to reject impossible guard-only edits."""
+    return body.replace("BoolOp(op=Or()", "BoolOp(op=And()").replace("ops=[NotEq()]", "ops=[Eq()]")
+
+
 def apply_hunks(source, diff):
     """Apply ordinary text hunks to the original source, checking old context."""
     original = source.splitlines(keepends=True)
@@ -368,6 +373,7 @@ class Impact:
                     after = FunctionBodies(updated, path)
                     same_structure = before.structure == after.structure
                     changed_ranges = []
+                    possible_guard_edit = self.has_guard_coverage and len(changes) == 2
                     if same_structure:
                         for (start, end, body, imports), (_, _, new_body, new_imports) in zip(
                             before.bodies, after.bodies,
@@ -378,11 +384,13 @@ class Impact:
                             if imports or new_imports:
                                 return None
                             changed_ranges.append((start, end))
+                            if possible_guard_edit:
+                                possible_guard_edit = mask_guard_operators(body) == mask_guard_operators(new_body)
                     if len(changes) == 2 and (changed_ranges or not same_structure):
                         profiled_deps = self.identity_dependencies(path, source, updated)
                         if profiled_deps is None and same_structure and ("<=" in change or ">=" in change):
                             profiled_deps = self.ordered_dependencies(path, source, updated, changed_ranges)
-                        if profiled_deps is None and same_structure:
+                        if profiled_deps is None and same_structure and possible_guard_edit:
                             profiled_deps = self.guard_dependencies(path, source, updated)
                         if profiled_deps is None and same_structure:
                             profiled_deps = self.literal_dependencies(path, source, updated)
