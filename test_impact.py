@@ -9,7 +9,7 @@ from build_syntax import build_syntax
 from expression_arguments import possible_argument_classes
 from expression_probe import missing_optional_arguments
 from factory_probe import opaque as factory_opaque, tag as factory_tag
-from fixture_reads import filtered_dependency
+from fixture_reads import filtered_dependency, pair_dependency
 from identity_comparisons import pure_equivalent
 from impact import Impact
 from ordered_comparisons import observe_order
@@ -113,6 +113,30 @@ class ImpactTest(unittest.TestCase):
         self.assertEqual(self.select(before, after.replace("--", "  --"), path=path, fixture_reads=reads), {4, 8})
         self.assertIsNone(self.select(before, after, collection=[(path, 0)], path=path, fixture_reads=reads))
         self.assertEqual(self.select(before, after, collection=[filtered], path=path, fixture_reads=reads), {8})
+
+    def test_fixture_pair_equivalence_keeps_line_and_raw_readers(self):
+        path = "tests/fixtures/example.sql"
+        before = "# dialect: sqlite\nSELECT 1;\nSELECT 1;\n"
+        after = "### dialect : sqlite  \nSELECT 1  ;\n  SELECT 1 \t;\n"
+        pairs = pair_dependency(path)
+        self.assertEqual(self.select(before, after, path=path, fixture_reads={
+            "dependent": [pairs],
+        }), set())
+        for dependency in (filtered_dependency(path), (path, 0)):
+            self.assertEqual(self.select(before, after, path=path, fixture_reads={
+                "dependent": [pairs], "unrelated": [dependency],
+            }), {8})
+
+    def test_fixture_pairs_preserve_metadata_order_and_errors(self):
+        path = "tests/fixtures/example.sql"
+        before = "# dialect: sqlite\n# identify: true\nSELECT 1;\nSELECT 1;\n"
+        reordered = "# identify: true\n# dialect: sqlite\nSELECT 1;\nSELECT 1;\n"
+        malformed = before.replace("# dialect:", "# dialect")
+        metadata_only = "# dialect: sqlite;\nSELECT 1;\n"
+        interior_space = before.replace("SELECT 1", "SELECT  1")
+        reads = {"dependent": [pair_dependency(path)]}
+        for after in (reordered, malformed, metadata_only, interior_space):
+            self.assertEqual(self.select(before, after, path=path, fixture_reads=reads), {4})
 
     def test_parser_table_factory_selects_module_consumers(self):
         path = "sqlglot/parsers/example.py"

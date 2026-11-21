@@ -14,7 +14,7 @@ from dialect_fields import changed_dialect_fields
 from expression_arguments import changed_expression_validators
 from factory_changes import factory_argument_structure
 from factory_probe import changed_show_entries, opaque as factory_opaque, tag as factory_tag
-from fixture_reads import filter_comments, filtered_dependency
+from fixture_reads import filter_comments, filtered_dependency, fixture_pairs, pair_dependency
 from guard_comparisons import changed_guards, supports_guard_profile
 from identity_comparisons import changed_identity_sites, supports_identity_profile
 from literal_statements import changed_local_literals, supports_literal_profile
@@ -321,13 +321,29 @@ class Impact:
             return None
         return {(path, 0)} | {factory_tag("called", path, site) for site in sites}
 
-    def same_filtered_fixture(self, path, hunks):
+    def fixture_dependencies(self, path, hunks, isolated):
+        raw = (path, 0)
+        filtered = filtered_dependency(path)
+        pairs = pair_dependency(path)
+        observed = {
+            dependency for dependency in (raw, filtered, pairs)
+            if dependency in self.dependents or dependency in self.collection
+        }
+        if not observed:
+            return None
+        if not isolated or observed == {raw}:
+            return observed
         try:
             source = (self.baseline / path).read_bytes().decode("utf-8")
-            updated = apply_hunks(source, hunks)
-        except (OSError, ValueError):
-            return False
-        return filter_comments(source) == filter_comments(updated)
+            before = filter_comments(source)
+            after = filter_comments(apply_hunks(source, hunks))
+            if before == after:
+                return observed - {filtered, pairs}
+            if pairs in observed and tuple(fixture_pairs(before)) == tuple(fixture_pairs(after)):
+                observed.remove(pairs)
+        except (OSError, ValueError, IndexError):
+            pass
+        return observed
 
     def select(self, patch):
         """Return affected test numbers, or None when the full suite is needed."""
@@ -398,13 +414,8 @@ class Impact:
                 if dependencies & self.collection:
                     return None
             elif path.startswith("tests/fixtures/"):
-                filtered = filtered_dependency(path)
-                if filtered in self.dependents or filtered in self.collection:
-                    if len(changes) != 2 or not self.same_filtered_fixture(path, change[header.end():]):
-                        dependencies.add(filtered)
-                elif (path, 0) not in self.dependents:
-                    return None
-                if dependencies & self.collection:
+                dependencies = self.fixture_dependencies(path, change[header.end():], len(changes) == 2)
+                if dependencies is None or dependencies & self.collection:
                     return None
             else:
                 return None
