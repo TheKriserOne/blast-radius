@@ -20,7 +20,7 @@ class ImpactTest(unittest.TestCase):
         self, before, after, imports=None, collection=(), *,
         path="sqlglot/parsers/example.py", expression_validators=None, dialect_reads=None,
         identity_reads=None, factory_calls=None, guard_reads=None, literal_reads=None, fixture_reads=None,
-        cached_source=None, ordered_reads=None, argument_presence=False,
+        cached_source=None, ordered_reads=None, argument_presence=False, extra_changes=(),
     ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
@@ -59,27 +59,30 @@ class ImpactTest(unittest.TestCase):
             if reads is not None:
                 for test_id, dependencies in reads.items():
                     coverage["tests"][test_id].extend(dependencies)
-        diff = f"diff --git a/{path} b/{path}\n" + "".join(
-            unified_diff(
-                before.splitlines(keepends=True), after.splitlines(keepends=True),
-                fromfile=f"a/{path}", tofile=f"b/{path}",
-            )
-        )
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / path
-            source.parent.mkdir(parents=True)
+            diff = []
+            for file, original, updated in ((path, before, after), *extra_changes):
+                source = root / file
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text(original, encoding="utf-8")
+                diff.append(f"diff --git a/{file} b/{file}\n")
+                diff.extend(unified_diff(
+                    original.splitlines(keepends=True), updated.splitlines(keepends=True),
+                    fromfile=f"a/{file}", tofile=f"b/{file}",
+                ))
             if cached_source is not None:
+                source = root / path
                 source.write_text(cached_source, encoding="utf-8")
                 build_syntax(root)
-            source.write_text(before, encoding="utf-8")
+                source.write_text(before, encoding="utf-8")
             coverage_file = root / "coverage.json.gz"
             coverage_file.write_bytes(gzip.compress(json.dumps(coverage).encode("utf-8")))
             imports_file = None
             if imports is not None:
                 imports_file = root / "import_map.json.gz"
                 imports_file.write_bytes(gzip.compress(json.dumps(imports).encode("utf-8")))
-            return Impact(tests, coverage_file, root, imports_file).select(diff)
+            return Impact(tests, coverage_file, root, imports_file).select("".join(diff))
 
     def test_encoding_comment_can_break_import(self):
         before = "# π\ndef transform(value):\n    return value\n"
@@ -171,6 +174,25 @@ class ImpactTest(unittest.TestCase):
         reads = {"dependent": [pair_dependency(path)]}
         for after in (reordered, malformed, metadata_only, interior_space):
             self.assertEqual(self.select(before, after, path=path, fixture_reads=reads), {4})
+
+    def test_equivalent_fixture_allows_single_source_selection(self):
+        path = "sqlglot/parsers/example.py"
+        before = "def check(value):\n    if value:\n        return value\n"
+        after = before.replace("if value:", "if not value:")
+        fixture = "tests/fixtures/example.sql"
+        change = (fixture, "SELECT 1;\nSELECT 1;\n", "SELECT 1 ;\nSELECT 1;\n")
+        parameters = {
+            "path": path,
+            "collection": [(f"@guard-site:{path}:2:7", 0)],
+            "guard_reads": {"unrelated": [(f"@guard-read:{path}:2:7", 0)]},
+            "extra_changes": [change],
+        }
+        self.assertEqual(self.select(before, after, fixture_reads={
+            "dependent": [pair_dependency(fixture)],
+        }, **parameters), {8})
+        self.assertEqual(self.select(before, after, fixture_reads={
+            "dependent": [pair_dependency(fixture), (fixture, 0)],
+        }, **parameters), {4})
 
     def test_parser_table_factory_selects_module_consumers(self):
         path = "sqlglot/parsers/example.py"

@@ -48,7 +48,7 @@ For an isolated `and`/`or` or `==`/`!=` change, or an added or removed leading `
 
 For a strict-to-inclusive comparison edit or its reverse, the selector checks where the operands were equal. It uses that evidence for comparisons against literal integers or integer tuples with verified operand types. It keeps function-level coverage when a test uses an unverified operand.
 
-For an isolated SQL fixture edit, the selector checks whether the standard loaders would yield the same input, expected output, and ordered metadata. Tests that read the raw file still run.
+The selector compares the standard SQL fixture loaders' input, expected output, and ordered metadata. It can also apply single-source selection to a mixed patch when every other edit is an equivalent fixture with no raw readers.
 
 `import_map.json.gz` records which tests use modules and which parser factories only create closures. The selector uses that map for same-type literal edits to those factory calls. For observed `SHOW_PARSERS` entries it can use exact calls recorded in the coverage map, with module-level selection when that trace is incomplete.
 

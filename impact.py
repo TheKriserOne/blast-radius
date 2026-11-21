@@ -388,28 +388,43 @@ class Impact:
 
     def select(self, patch):
         """Return affected test numbers, or None when the full suite is needed."""
-        changes = re.split(r"(?m)^diff --git ", patch)
-        if len(changes) < 2 or changes[0]:
+        sections = re.split(r"(?m)^diff --git ", patch)
+        if len(sections) < 2 or sections[0]:
             return None
 
-        selected = self.uncovered | self.dependents.get(UNTRACED, set())
-        for change in changes[1:]:
-            header = FILE_HEADER.match(change)
+        changes = {}
+        for section in sections[1:]:
+            header = FILE_HEADER.match(section)
             if not header:
                 return None
             path = header[1]
-            if any(part in {"", ".", ".."} for part in path.split("/")):
+            if path in changes or any(part in {"", ".", ".."} for part in path.split("/")):
                 return None
+            changes[path] = section[header.end():]
 
+        if len(changes) > 1:
+            sources = {path: hunks for path, hunks in changes.items()
+                       if path.startswith("sqlglot/") and path.endswith(".py")}
+            # A fixture with identical loader output and no raw readers adds no effective edit.
+            if len(sources) <= 1 and all(
+                path in sources or (path.startswith("tests/fixtures/")
+                                    and self.fixture_dependencies(path, hunks, True) == set())
+                for path, hunks in changes.items()
+            ):
+                changes = sources
+
+        isolated = len(changes) == 1
+        selected = self.uncovered | self.dependents.get(UNTRACED, set())
+        for path, hunks in changes.items():
             dependencies = {(path, 0)}
             if path.startswith("sqlglot/") and path.endswith(".py"):
                 try:
                     source, before = self.baseline_file(path)
-                    updated = apply_hunks(source, change[header.end():])
+                    updated = apply_hunks(source, hunks)
                     after = FunctionBodies(updated, path)
                     same_structure = before.structure == after.structure
                     changed_ranges = []
-                    possible_guard_edit = self.has_guard_coverage and len(changes) == 2
+                    possible_guard_edit = self.has_guard_coverage and isolated
                     if same_structure:
                         for (start, end, body, imports), (_, _, new_body, new_imports) in zip(
                             before.bodies, after.bodies,
@@ -422,9 +437,9 @@ class Impact:
                             changed_ranges.append((start, end))
                             if possible_guard_edit:
                                 possible_guard_edit = mask_guard_operators(body) == mask_guard_operators(new_body)
-                    if len(changes) == 2 and (changed_ranges or not same_structure):
+                    if isolated and (changed_ranges or not same_structure):
                         profiled_deps = self.identity_dependencies(path, source, updated)
-                        if profiled_deps is None and same_structure and ("<=" in change or ">=" in change):
+                        if profiled_deps is None and same_structure and ("<=" in hunks or ">=" in hunks):
                             profiled_deps = self.ordered_dependencies(path, source, updated, changed_ranges)
                         if profiled_deps is None and same_structure and possible_guard_edit:
                             profiled_deps = self.guard_dependencies(path, source, updated)
@@ -435,7 +450,7 @@ class Impact:
                                 return None
                             return selected.union(*(self.dependents.get(d, ()) for d in profiled_deps))
                     if not same_structure:
-                        if len(changes) != 2:
+                        if not isolated:
                             return None
                         expression_tests = self.tests_for_expression_arguments(path, source, updated)
                         if expression_tests is not None:
@@ -458,7 +473,7 @@ class Impact:
                 if dependencies & self.collection:
                     return None
             elif path.startswith("tests/fixtures/"):
-                dependencies = self.fixture_dependencies(path, change[header.end():], len(changes) == 2)
+                dependencies = self.fixture_dependencies(path, hunks, isolated)
                 if dependencies is None or dependencies & self.collection:
                     return None
             else:
