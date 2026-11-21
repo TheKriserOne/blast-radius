@@ -4,6 +4,8 @@ import gzip
 import json
 import os
 import pickle
+import shutil
+import subprocess
 import sys
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
@@ -13,6 +15,8 @@ from pathlib import Path
 import pytest
 
 _PROCESS_COVERAGE = None
+RAW_RECEIPT = "BLAST_RADIUS_RAW_RECEIPT"
+RAW_BASELINE = "BLAST_RADIUS_RAW_BASELINE"
 
 
 def run_traced_task(nodeid, payload):
@@ -39,6 +43,7 @@ class Coverage:
         self.failed = set()
         self.output = Path(os.environ["BLAST_RADIUS_COVERAGE_DIR"])
         self.active = True
+        self.raw_children = {}
         self.monitoring = monitoring = sys.monitoring
         monitoring.use_tool_id(monitoring.COVERAGE_ID, "blast-radius")
         monitoring.register_callback(monitoring.COVERAGE_ID, monitoring.events.PY_START, self.enter)
@@ -62,9 +67,54 @@ class Coverage:
                 caller = sys._getframe(1).f_code.co_filename
                 if not caller.startswith("<frozen importlib"):
                     self.current.add((path[len(self.root):], 0))
-        elif event in {"subprocess.Popen", "os.system", "os.fork", "os.posix_spawn"}:
+        elif event in {"subprocess.Popen", "os.system", "os.fork", "os.forkpty", "os.posix_spawn"}:
             # Child processes can run code that Python's monitor cannot see.
+            if event in {"subprocess.Popen", "os.posix_spawn"}:
+                environment = args[-1] or {}
+                if environment.get(RAW_RECEIPT) in self.raw_children:
+                    return
             self.current.add(("*", 0))
+
+    def trace_subprocesses(self):
+        initialize = subprocess.Popen.__init__
+
+        def traced_initialize(process, args, *positional, **options):
+            environment = options.get("env")
+            if environment is None:
+                environment = os.environ
+            if (
+                positional
+                or not isinstance(args, (tuple, list))
+                or not args
+                or any(options.get(key) is not None for key in ("cwd", "executable", "preexec_fn"))
+                or options.get("shell")
+            ):
+                return initialize(process, args, *positional, **options)
+            path = shutil.which(os.fsdecode(args[0]), path=environment.get("PATH", os.defpath))
+            if path is None or os.path.realpath(path) != os.path.realpath(sys.executable):
+                return initialize(process, args, *positional, **options)
+
+            receipt = str(self.output.resolve() / f"raw-{os.getpid()}-{len(self.raw_children)}.trace")
+            self.raw_children[receipt] = process, self.current
+            options["env"] = dict(environment, **{RAW_RECEIPT: receipt, RAW_BASELINE: self.root})
+            try:
+                return initialize(process, args, **options)
+            except BaseException:
+                self.raw_children.pop(receipt)
+                self.current.add(("*", 0))
+                raise
+
+        subprocess.Popen.__init__ = traced_initialize
+
+    def collect_raw_children(self):
+        for receipt, (process, scope) in self.raw_children.items():
+            try:
+                trace = json.loads(Path(receipt).read_text(encoding="utf-8"))
+                if process.poll() != 0 or trace["pid"] != process.pid:
+                    raise ValueError("incomplete child trace")
+                scope.update(map(tuple, trace["dependencies"]))
+            except (OSError, ValueError, KeyError, TypeError):
+                scope.add(("*", 0))
 
     def trace_process_pools(self):
         submit = ProcessPoolExecutor.submit
@@ -120,6 +170,7 @@ class Coverage:
     def write(self, worker):
         self.monitoring.set_events(self.monitoring.COVERAGE_ID, 0)
         self.active = False
+        self.collect_raw_children()
         path = self.output / f"{worker}.json"
         path.write_text(json.dumps({
             "collection": sorted(self.collection),
@@ -135,6 +186,7 @@ def pytest_configure(config):
     if not config.getoption("numprocesses", default=0) or hasattr(config, "workerinput"):
         coverage = Coverage()
         coverage.trace_process_pools()
+        coverage.trace_subprocesses()
         config.pluginmanager.register(coverage)
 
 

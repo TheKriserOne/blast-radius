@@ -12,7 +12,7 @@ RUN python -c 'from urllib.request import urlretrieve; urlretrieve("https://code
 FROM checkout AS coverage
 COPY requirements.lock /tmp/requirements.lock
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.lock
-COPY build_coverage.py /app/build_coverage.py
+COPY build_coverage.py sitecustomize.py /app/
 RUN mkdir /coverage \
     && SKIP_INTEGRATION=0 PYTHONPATH=/app BLAST_RADIUS_COVERAGE_DIR=/coverage \
         python -m pytest -q -n 4 --dist loadfile -p build_coverage tests \
