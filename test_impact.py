@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from build_syntax import build_syntax
+from expression_arguments import possible_argument_classes
 from expression_probe import missing_optional_arguments
 from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filtered_dependency
@@ -207,6 +208,21 @@ class ImpactTest(unittest.TestCase):
         self.assertEqual(self.select(after, before, expression_validators={
             "dependent": [validator],
         }, **options), {4})
+
+    def test_argument_coverage_keeps_classes_copying_flags(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sqlglot/expressions/example.py"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "class Grant(Expression):\n    arg_types = {'kind': False}\n"
+                "class Revoke(Expression):\n    arg_types = {**Grant.arg_types, 'cascade': True}\n"
+                "class Unrelated(Expression):\n    arg_types = external()\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(possible_argument_classes(root), {
+                "sqlglot.expressions.example.Grant", "sqlglot.expressions.example.Revoke",
+            })
 
     def test_argument_presence_probe_keeps_custom_values_and_multiple_errors(self):
         class Options:

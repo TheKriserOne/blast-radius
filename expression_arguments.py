@@ -41,6 +41,33 @@ def argument_structure(module):
     return ast.dump(module), flags, copies
 
 
+def with_copied_arguments(classes, copies):
+    classes = set(classes)
+    pending = list(classes)
+    while pending:
+        source_class = pending.pop()
+        for name, parents in copies.items():
+            if source_class in parents and name not in classes:
+                classes.add(name)
+                pending.append(name)
+    return classes
+
+
+def expression_module(path):
+    return path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+
+
+def possible_argument_classes(baseline):
+    """Find the classes a required-argument edit can affect."""
+    classes = set()
+    for path in (baseline / "sqlglot/expressions").rglob("*.py"):
+        relative = path.relative_to(baseline).as_posix()
+        _, flags, copies = argument_structure(ast.parse(path.read_bytes(), relative))
+        module = expression_module(relative)
+        classes.update(f"{module}.{name}" for name in with_copied_arguments(flags, copies))
+    return classes
+
+
 def changed_expression_validators(path, source, updated):
     before, original_flags, copies = argument_structure(ast.parse(source.encode("utf-8"), path))
     after, updated_flags, _ = argument_structure(ast.parse(updated.encode("utf-8"), path))
@@ -54,13 +81,6 @@ def changed_expression_validators(path, source, updated):
         for key, old in original_flags[name].items()
         if old != updated_flags[name][key]
     ]
-    pending = list(changed)
-    while pending:
-        source_class = pending.pop()
-        for name, parents in copies.items():
-            if source_class in parents and name not in changed:
-                changed.add(name)
-                pending.append(name)
-    module = path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+    module = expression_module(path)
     additions = {key for key, _ in flips} if all(not old for _, old in flips) else set()
-    return {(f"@expr:{module}.{name}", 0) for name in changed}, additions
+    return {(f"@expr:{module}.{name}", 0) for name in with_copied_arguments(changed, copies)}, additions

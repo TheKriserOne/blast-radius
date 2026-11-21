@@ -13,6 +13,7 @@ from multiprocessing.util import Finalize
 from pathlib import Path
 
 import pytest
+from expression_arguments import possible_argument_classes
 from expression_probe import observe_expression_validation
 from factory_probe import observe_factory_calls
 from fixture_reads import fixture_dependency
@@ -238,7 +239,21 @@ def pack_coverage(directory, output):
             else:
                 tests[nodeid] = set(map(tuple, dependencies))
 
-    tests = {nodeid: dependencies | child_tests[nodeid] for nodeid, dependencies in tests.items()}
+    baseline = Path.cwd()
+    argument_classes = None
+    if argument_presence and (baseline / "sqlglot/expressions").is_dir():
+        argument_classes = possible_argument_classes(baseline)
+
+    def keep_dependency(dependency):
+        if argument_classes is None:
+            return True
+        kind, _, tag = dependency[0].partition(":")
+        return kind not in {"@expr-missing", "@expr-opaque"} or tag.partition(":")[0] in argument_classes
+
+    tests = {
+        nodeid: {dep for dep in dependencies | child_tests[nodeid] if keep_dependency(dep)}
+        for nodeid, dependencies in tests.items()
+    }
     dependency_table = sorted(collection.union(*tests.values()))
     dependency_numbers = {dependency: index for index, dependency in enumerate(dependency_table)}
     payload = {
