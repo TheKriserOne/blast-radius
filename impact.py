@@ -71,7 +71,9 @@ class FunctionBodies(ast.NodeVisitor):
     def visit_FunctionDef(self, node):
         start = min([node.lineno, *(decorator.lineno for decorator in node.decorator_list)])
         body = ast.dump(ast.Module(body=node.body, type_ignores=[]))
-        imports = any(isinstance(part, (ast.Import, ast.ImportFrom)) for part in ast.walk(node))
+        imports = ("Import(" in body or "ImportFrom(" in body) and any(
+            isinstance(part, (ast.Import, ast.ImportFrom)) for part in ast.walk(node)
+        )
         self.bodies.append((start, node.end_lineno, body, imports))
         # Defaults, decorators, and docstrings can affect import-time behavior.
         node.body = node.body[:1] if ast.get_docstring(node, clean=False) is not None else []
@@ -310,11 +312,11 @@ class Impact:
                             if imports or new_imports:
                                 return None
                             changed_ranges.append((start, end))
-                    if len(changes) == 2:
+                    if len(changes) == 2 and (changed_ranges or not same_structure):
                         profiled_deps = self.identity_dependencies(path, source, updated)
-                        if profiled_deps is None:
+                        if profiled_deps is None and same_structure:
                             profiled_deps = self.guard_dependencies(path, source, updated)
-                        if profiled_deps is None:
+                        if profiled_deps is None and same_structure:
                             profiled_deps = self.literal_dependencies(path, source, updated)
                         if profiled_deps is not None:
                             if profiled_deps & self.collection:
