@@ -3,7 +3,8 @@
 import ast
 import operator
 
-from identity_comparisons import enclosing_code_lines, location
+from identity_comparisons import location
+from syntax_profile import enclosing_code_lines, match_profile
 
 
 OPERATORS = {"lt": operator.lt, "le": operator.le, "gt": operator.gt, "ge": operator.ge}
@@ -99,21 +100,23 @@ class OrderedComparisons(ast.NodeTransformer):
         ), node)
 
 
-def changed_ordered_sites(path, source, updated):
-    before = ast.parse(source.encode("utf-8"), path)
-    after = ast.parse(updated.encode("utf-8"), path)
-    old, new = OrderedComparisons(path), OrderedComparisons(path)
-    old.visit(before)
-    new.visit(after)
-    if ast.dump(before) != ast.dump(after) or len(old.comparisons) != len(new.comparisons):
+def ordered_structure(module, path):
+    normalizer = OrderedComparisons(path)
+    return ast.dump(normalizer.visit(module)), normalizer.comparisons
+
+
+def changed_ordered_sites(path, source, updated, baseline=None):
+    match = match_profile(path, source, updated, ordered_structure, baseline)
+    if match is None:
         return {}, set()
+    pairs, scopes = match
     changed = {}
-    for (site, original), replacement in zip(old.comparisons.items(), new.comparisons.values()):
+    for (site, original), replacement in pairs:
         if original[1] != replacement[1]:
             return {}, set()
         if original != replacement:
             changed[site] = original, replacement
-    return changed, enclosing_code_lines(before, changed)
+    return changed, enclosing_code_lines(scopes, changed)
 
 
 def threshold_changes_result(token, original, replacement):

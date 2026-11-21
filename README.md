@@ -54,7 +54,7 @@ The selector compares the standard SQL fixture loaders' input, expected output, 
 
 Run `make imports` and then `make coverage` to regenerate the maps from the checked-in baseline data. Ordinary builds reuse both maps. Run `python3 -m unittest test_impact` to check patch classification.
 
-The Docker build saves syntax summaries for the pinned Python files. The selector loads each summary on demand and checks it against the source file before using it.
+The Docker build saves syntax summaries and normalized baseline trees for the identity, guard, ordered comparison, and literal matchers. The selector loads each summary on demand and checks it against the source file before using it.
 
 ## Submit
 

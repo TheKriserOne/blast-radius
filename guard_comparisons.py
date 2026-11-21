@@ -2,7 +2,8 @@
 
 import ast
 
-from identity_comparisons import enclosing_code_lines, location
+from identity_comparisons import location
+from syntax_profile import enclosing_code_lines, match_profile
 
 
 def supports_guard_profile(module):
@@ -55,10 +56,10 @@ class GuardComparisons(ast.NodeTransformer):
                 test = test.operand
             operator = None
             if isinstance(test, ast.BoolOp):
-                operator = type(test.op)
+                operator = type(test.op).__name__
                 test.op = ast.And()
             elif isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], (ast.Eq, ast.NotEq)):
-                operator = type(test.ops[0])
+                operator = type(test.ops[0]).__name__
                 test.ops[0] = ast.Eq()
             self.operators[site] = negated, operator
             node.test = test
@@ -72,18 +73,20 @@ class GuardComparisons(ast.NodeTransformer):
         return [ast.copy_location(read, node), node]
 
 
-def changed_guards(path, source, updated):
-    old, new = GuardComparisons(path), GuardComparisons(path)
-    before = old.visit(ast.parse(source.encode("utf-8"), path))
-    after = new.visit(ast.parse(updated.encode("utf-8"), path))
-    if ast.dump(before) != ast.dump(after) or len(old.operators) != len(new.operators):
+def guard_structure(module, path):
+    normalizer = GuardComparisons(path)
+    return ast.dump(normalizer.visit(module)), normalizer.operators
+
+
+def changed_guards(path, source, updated, baseline=None):
+    match = match_profile(path, source, updated, guard_structure, baseline)
+    if match is None:
         return set(), set()
+    pairs, scopes = match
     changed = set()
-    for (site, (negated, operator)), (new_negated, new_operator) in zip(
-        old.operators.items(), new.operators.values(),
-    ):
+    for (site, (negated, operator)), (new_negated, new_operator) in pairs:
         if negated != new_negated and operator != new_operator:
             return set(), set()
         if (negated, operator) != (new_negated, new_operator):
             changed.add(site)
-    return changed, enclosing_code_lines(before, changed)
+    return changed, enclosing_code_lines(scopes, changed)

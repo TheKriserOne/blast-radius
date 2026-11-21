@@ -6,6 +6,8 @@ from pathlib import Path
 from threading import local
 from types import FunctionType, MethodType
 
+from syntax_profile import enclosing_code_lines, match_profile
+
 
 def supports_identity_profile(module):
     return module.startswith(("sqlglot.dialects.", "sqlglot.executor."))
@@ -35,36 +37,23 @@ def identity_structure(module, path):
     operators = {}
     for node in ast.walk(module):
         if candidate(node, (ast.Is, ast.Eq)):
-            operators[location(path, node)] = type(node.ops[0])
+            operators[location(path, node)] = isinstance(node.ops[0], ast.Is)
             node.ops[0] = ast.Is()
     return ast.dump(module), operators
 
 
-def changed_identity_sites(path, source, updated):
-    module = ast.parse(source.encode("utf-8"), path)
-    before, original = identity_structure(module, path)
-    after, patched = identity_structure(ast.parse(updated.encode("utf-8"), path), path)
-    if before != after or len(original) != len(patched):
+def changed_identity_sites(path, source, updated, baseline=None):
+    match = match_profile(path, source, updated, identity_structure, baseline)
+    if match is None:
         return set(), set()
+    pairs, scopes = match
     changed = set()
-    for (site, old), new in zip(original.items(), patched.values()):
-        if old is new:
-            continue
-        if old is not ast.Is or new is not ast.Eq:
+    for (site, was_identity), is_identity in pairs:
+        if is_identity and not was_identity:
             return set(), set()
-        changed.add(site)
-    return changed, enclosing_code_lines(module, changed)
-
-
-def enclosing_code_lines(module, sites):
-    lines = {int(site.rsplit(":", 2)[1]) for site in sites}
-    code_lines = {1}
-    for node in ast.walk(module):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-            start = min([node.lineno, *(d.lineno for d in getattr(node, "decorator_list", ()))])
-            if any(start <= line <= node.end_lineno for line in lines):
-                code_lines.add(start)
-    return code_lines
+        if was_identity and not is_identity:
+            changed.add(site)
+    return changed, enclosing_code_lines(scopes, changed)
 
 
 class IdentityReads(ast.NodeTransformer):

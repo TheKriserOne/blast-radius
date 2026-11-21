@@ -96,6 +96,20 @@ class ImpactTest(unittest.TestCase):
         invalid = before.replace("    return", "    break\n    return")
         self.assertIsNone(self.select(before, invalid, cached_source=before))
 
+    def test_cached_matcher_uses_only_the_matching_baseline(self):
+        path = "sqlglot/parsers/example.py"
+        before = "def check(left, right):\n    if left and right:\n        return True\n"
+        after = before.replace("and", "or")
+        site = f"{path}:2:7"
+        options = {
+            "path": path,
+            "collection": [(f"@guard-site:{site}", 0)],
+            "guard_reads": {"unrelated": [(f"@guard-read:{site}", 0)]},
+        }
+        with patch("syntax_profile.baseline_profile", side_effect=AssertionError("reparsed cached baseline")):
+            self.assertEqual(self.select(before, after, cached_source=before, **options), {8})
+        self.assertEqual(self.select(before, after, cached_source=after, **options), {8})
+
     def test_dependency_aliases_keep_collection_and_catalog_subsets(self):
         dependency, alias = ("sqlglot/example.py", 1), ("sqlglot/example.py", 2)
         absent, absent_alias = ("sqlglot/other.py", 1), ("sqlglot/other.py", 2)

@@ -2,7 +2,8 @@
 
 import ast
 
-from identity_comparisons import enclosing_code_lines, location
+from identity_comparisons import location
+from syntax_profile import enclosing_code_lines, match_profile
 
 
 def supports_literal_profile(module):
@@ -68,15 +69,16 @@ class LiteralStatements(ast.NodeTransformer):
         return [ast.copy_location(read, node), node]
 
 
-def changed_local_literals(path, source, updated):
-    before = ast.parse(source.encode("utf-8"), path)
-    after = ast.parse(updated.encode("utf-8"), path)
-    old, new = LiteralStatements(path), LiteralStatements(path)
-    old.visit(before)
-    new.visit(after)
-    if ast.dump(before) != ast.dump(after) or len(old.literals) != len(new.literals):
+def literal_structure(module, path):
+    normalizer = LiteralStatements(path)
+    return ast.dump(normalizer.visit(module)), normalizer.literals
+
+
+def changed_local_literals(path, source, updated, baseline=None):
+    match = match_profile(path, source, updated, literal_structure, baseline)
+    if match is None:
         return set(), set()
+    pairs, scopes = match
     # repr preserves differences such as positive and negative zero.
-    changed = {site for (site, value), new_value in zip(old.literals.items(), new.literals.values())
-               if value != new_value}
-    return changed, enclosing_code_lines(before, changed)
+    changed = {site for (site, value), new_value in pairs if value != new_value}
+    return changed, enclosing_code_lines(scopes, changed)

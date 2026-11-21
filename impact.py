@@ -19,6 +19,7 @@ from guard_comparisons import changed_guards, supports_guard_profile
 from identity_comparisons import changed_identity_sites, supports_identity_profile
 from literal_statements import changed_local_literals, supports_literal_profile
 from ordered_comparisons import changed_ordered_sites, threshold_changes_result
+from syntax_profile import PROFILE_DIRECTORY
 
 FILE_HEADER = re.compile(
     r"a/([\w./-]+) b/\1\n(?:index [^\n]*\n)?--- a/\1\n\+\+\+ b/\1\n(?=@@ )",
@@ -251,6 +252,16 @@ class Impact:
             self.baseline_files[path] = source, summary or FunctionBodies(source, path)
         return self.baseline_files[path]
 
+    def cached_profile(self, kind, path, source):
+        if self.baseline_syntax is None:
+            return None
+        try:
+            digest, profile = marshal.loads(self.baseline_syntax.read(f"{PROFILE_DIRECTORY}/{kind}/{path}"))
+        except (BadZipFile, EOFError, KeyError, ValueError):
+            return None
+        if digest == sha256(source.encode("utf-8")).digest():
+            return profile
+
     def is_parser_factory_edit(self, path, source, updated):
         factories = self.import_map["factories"].get(path)
         if not factories or path in self.collection_files or not self.import_map["files_by_path"].get(path):
@@ -315,7 +326,7 @@ class Impact:
     def identity_dependencies(self, path, source, updated):
         if not self.has_identity_comparisons or not supports_identity_profile(path.replace("/", ".")):
             return None
-        sites, code_lines = changed_identity_sites(path, source, updated)
+        sites, code_lines = changed_identity_sites(path, source, updated, self.cached_profile("identity", path, source))
         if not sites or not sites <= self.identity_sites:
             return None
         return (
@@ -327,7 +338,7 @@ class Impact:
     def guard_dependencies(self, path, source, updated):
         if not self.has_guard_coverage or not supports_guard_profile(path.removesuffix(".py").replace("/", ".")):
             return None
-        sites, code_lines = changed_guards(path, source, updated)
+        sites, code_lines = changed_guards(path, source, updated, self.cached_profile("guard", path, source))
         if not sites or not sites <= self.guard_sites:
             return None
         return (
@@ -344,7 +355,7 @@ class Impact:
             for start, end in self.ordered_spans[path]
         ):
             return None
-        changes, code_lines = changed_ordered_sites(path, source, updated)
+        changes, code_lines = changed_ordered_sites(path, source, updated, self.cached_profile("ordered", path, source))
         if not changes or not changes.keys() <= self.ordered_sites:
             return None
         unsafe = {(f"@ordered-unsafe:{site}", 0) for site in changes}
@@ -375,7 +386,7 @@ class Impact:
     def literal_dependencies(self, path, source, updated):
         if not self.has_literal_coverage or not supports_literal_profile(path.replace("/", ".")):
             return None
-        sites, code_lines = changed_local_literals(path, source, updated)
+        sites, code_lines = changed_local_literals(path, source, updated, self.cached_profile("literal", path, source))
         if not sites or not sites <= self.literal_sites:
             return None
         return (
