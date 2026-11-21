@@ -1,6 +1,6 @@
 # Blast Radius starter
 
-A working submission for the Blast Radius track. It runs every test on every commit, so it never misses a failure and scores badly. Your job is to run less without missing.
+A submission for the Blast Radius track. It maps patched functions and fixtures to tests that exercised them on the pinned SQLGlot checkout. Unrecognized changes and possible import failures fall back to the full suite.
 
 ## The problem
 
@@ -37,6 +37,8 @@ make check    # the output's format only
 `make sample` prints your simulated seconds and misses, which are exact for that output. The board adds the CPU seconds your container used and takes the middle of 3 runs, so expect it a little higher. Your program never sees `sample/answers.json`: only the patches and `tests.json` are mounted.
 
 `sample/answers.json` lists the tests each sample commit breaks and the kind of change it is. The practice and final commits are hidden, and so is everything your program prints when it runs on them. A rejected submission tells you which rule it broke and nothing more, so reproduce problems here.
+
+`coverage.json.gz` contains per-test function and file dependencies captured with the pinned dependencies. Run `make coverage` to regenerate it from the unmodified checkout. Ordinary builds reuse the checked-in map. Run `python3 -m unittest test_impact` to check patch classification.
 
 ## Submit
 

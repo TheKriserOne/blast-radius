@@ -1,14 +1,13 @@
-"""Schedule every test on every commit and choose the lowest-cost worker count.
-
-It never misses a failing test and it is slow. Everything you do from here
-is deciding which tests a change cannot break.
-"""
+"""Select tests for each commit and choose the lowest-cost worker count."""
 
 import json
 import sys
 from pathlib import Path
 
+from impact import Impact
+
 DATA = Path("/data")
+APP = Path(__file__).resolve().parent
 MAX_WORKERS = 4
 WORKER_COST_MILLISECONDS = 2_000
 
@@ -93,10 +92,20 @@ def choose_workers(tests: list[dict]) -> list[list[int]]:
 
 def main() -> None:
     tests = json.loads((DATA / "tests.json").read_text())["tests"]
-    workers = choose_workers(tests)
+    impact = Impact(tests, APP / "coverage.json.gz", APP / "baseline")
+    by_number = {test["number"]: test for test in tests}
+    schedules = {}
     for patch in sorted((DATA / "commits").glob("*.patch")):
-        print(json.dumps({"commit": patch.stem, "workers": workers}))
-    print(f"selected {len(tests)} tests on every commit", file=sys.stderr)
+        try:
+            selected = impact.select(patch.read_bytes().decode("utf-8"))
+        except UnicodeDecodeError:
+            selected = None
+        key = None if selected is None else frozenset(selected)
+        if key not in schedules:
+            candidates = tests if key is None else [by_number[number] for number in sorted(key)]
+            schedules[key] = choose_workers(candidates)
+        print(json.dumps({"commit": patch.stem, "workers": schedules[key]}))
+    print(f"built {len(schedules)} schedules", file=sys.stderr)
 
 
 if __name__ == "__main__":
