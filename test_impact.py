@@ -92,6 +92,26 @@ class ImpactTest(unittest.TestCase):
         invalid = before.replace("    return", "    break\n    return")
         self.assertIsNone(self.select(before, invalid, cached_source=before))
 
+    def test_dependency_aliases_keep_collection_and_catalog_subsets(self):
+        dependency, alias = ("sqlglot/example.py", 1), ("sqlglot/example.py", 2)
+        absent, absent_alias = ("sqlglot/other.py", 1), ("sqlglot/other.py", 2)
+        coverage = {
+            "dependencies": [dependency, alias, absent, absent_alias],
+            "collection": [0],
+            "tests": {"included": [0], "excluded": [2]},
+            "aliases": [[1, 0], [3, 2]],
+        }
+        tests = [{"id": "included", "number": 4}, {"id": "unprofiled", "number": 8}]
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            coverage_file = root / "coverage.json.gz"
+            coverage_file.write_bytes(gzip.compress(json.dumps(coverage).encode("utf-8")))
+            impact = Impact(tests, coverage_file, root)
+            self.assertEqual(impact.dependents, {dependency: {4}, alias: {4}})
+            self.assertIs(impact.dependents[alias], impact.dependents[dependency])
+            self.assertEqual(impact.collection, {dependency})
+            self.assertEqual(impact.uncovered, {8})
+
     def test_hunks_preserve_non_lf_separators_and_unterminated_rows(self):
         hunks = (
             "@@ -1,2 +1,2 @@\n before\rafter\n"

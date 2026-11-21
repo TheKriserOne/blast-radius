@@ -181,6 +181,10 @@ class Impact:
             else:
                 for dependency in map(decode_dependency, dependencies):
                     self.dependents[dependency].add(test["number"])
+        for alias, representative in coverage.get("aliases", ()):
+            tests_for_dependency = self.dependents.get(decode_dependency(representative))
+            if tests_for_dependency is not None:
+                self.dependents[decode_dependency(alias)] = tests_for_dependency
 
         self.lines = defaultdict(set)
         all_dependencies = self.dependents.keys() | self.collection

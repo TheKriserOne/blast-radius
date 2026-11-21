@@ -211,6 +211,22 @@ def pytest_configure(config):
         config.pluginmanager.register(coverage)
 
 
+def find_dependency_aliases(test_rows, dependency_count):
+    memberships = [[] for _ in range(dependency_count)]
+    for test_index, dependencies in enumerate(test_rows.values()):
+        for dependency in dependencies:
+            memberships[dependency].append(test_index)
+
+    representatives = {}
+    aliases = {}
+    for dependency, test_indexes in enumerate(memberships):
+        if test_indexes:
+            representative = representatives.setdefault(tuple(test_indexes), dependency)
+            if representative != dependency:
+                aliases[dependency] = representative
+    return aliases
+
+
 def pack_coverage(directory, output):
     """Merge worker and child-process coverage into one reproducible artifact."""
     collection = set()
@@ -256,6 +272,11 @@ def pack_coverage(directory, output):
     }
     dependency_table = sorted(collection.union(*tests.values()))
     dependency_numbers = {dependency: index for index, dependency in enumerate(dependency_table)}
+    test_rows = {
+        nodeid: sorted(dependency_numbers[dependency] for dependency in dependencies)
+        for nodeid, dependencies in sorted(tests.items())
+    }
+    aliases = find_dependency_aliases(test_rows, len(dependency_table))
     payload = {
         "expression_validation": bool(tests) and expression_validation,
         "argument_presence": bool(tests) and argument_presence,
@@ -266,9 +287,10 @@ def pack_coverage(directory, output):
         "factory_calls": bool(tests) and factory_calls,
         "dependencies": dependency_table,
         "collection": sorted(dependency_numbers[dependency] for dependency in collection),
+        "aliases": list(aliases.items()),
         "tests": {
-            nodeid: sorted(dependency_numbers[dependency] for dependency in dependencies)
-            for nodeid, dependencies in sorted(tests.items())
+            nodeid: [dependency for dependency in dependencies if dependency not in aliases]
+            for nodeid, dependencies in test_rows.items()
         },
     }
     output.write_bytes(gzip.compress(
