@@ -95,7 +95,11 @@ class Impact:
         self.has_dialect_fields = coverage.get("dialect_fields", False)
         self.has_identity_comparisons = coverage.get("identity_comparisons", False)
         self.has_factory_calls = coverage.get("factory_calls", False)
-        self.collection = set(map(tuple, coverage["collection"]))
+        decode_dependency = tuple
+        if "dependencies" in coverage:
+            dependency_table = [tuple(entry) for entry in coverage["dependencies"]]
+            decode_dependency = dependency_table.__getitem__
+        self.collection = set(map(decode_dependency, coverage["collection"]))
         self.collection_files = {path for path, _ in self.collection}
 
         self.import_map = {"factories": {}, "files_by_path": {}}
@@ -120,8 +124,8 @@ class Impact:
             if dependencies is None:
                 self.uncovered.add(test["number"])
             else:
-                for path, line in dependencies:
-                    self.dependents[path, line].add(test["number"])
+                for dependency in map(decode_dependency, dependencies):
+                    self.dependents[dependency].add(test["number"])
 
         self.lines = defaultdict(set)
         all_dependencies = self.dependents.keys() | self.collection

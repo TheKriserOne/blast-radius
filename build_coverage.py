@@ -227,14 +227,18 @@ def pack_coverage(directory, output):
             else:
                 tests[nodeid] = set(map(tuple, dependencies))
 
+    tests = {nodeid: dependencies | child_tests[nodeid] for nodeid, dependencies in tests.items()}
+    dependency_table = sorted(collection.union(*tests.values()))
+    dependency_numbers = {dependency: index for index, dependency in enumerate(dependency_table)}
     payload = {
         "expression_validation": bool(tests) and expression_validation,
         "dialect_fields": bool(tests) and dialect_fields,
         "identity_comparisons": bool(tests) and identity_comparisons,
         "factory_calls": bool(tests) and factory_calls,
-        "collection": sorted(collection),
+        "dependencies": dependency_table,
+        "collection": sorted(dependency_numbers[dependency] for dependency in collection),
         "tests": {
-            nodeid: sorted(dependencies | child_tests[nodeid])
+            nodeid: sorted(dependency_numbers[dependency] for dependency in dependencies)
             for nodeid, dependencies in sorted(tests.items())
         },
     }
