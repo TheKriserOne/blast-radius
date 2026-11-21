@@ -10,6 +10,7 @@ from factory_probe import attach_factory_calls
 from guard_comparisons import GuardReads, supports_guard_profile
 from identity_comparisons import IdentityProbe, IdentityReads, supports_identity_profile
 from literal_statements import LiteralStatements, supports_literal_profile
+from ordered_comparisons import OrderedComparisons, observe_order, supports_ordered_profile
 
 
 MODULES = {
@@ -73,6 +74,7 @@ class DialectProbe:
             or supports_identity_profile(module)
             or supports_guard_profile(module)
             or supports_literal_profile(module)
+            or supports_ordered_profile(module)
             for module in sys.modules
         ):
             raise RuntimeError("Dialect profiling began after SQLGlot was loaded")
@@ -128,11 +130,15 @@ class DialectProbe:
     def literal_assignment(self, site):
         self.scope().add((f"@literal-read:{site}", 0))
 
+    def ordered(self, left, right, operation, site):
+        return observe_order(self.scope(), left, right, operation, site)
+
     def find_spec(self, name, path=None, target=None):
         identity_profile = supports_identity_profile(name)
         guard_profile = supports_guard_profile(name)
         literal_profile = supports_literal_profile(name)
-        if name not in MODULES and not identity_profile and not guard_profile and not literal_profile:
+        ordered_profile = supports_ordered_profile(name)
+        if not any((name in MODULES, identity_profile, guard_profile, literal_profile, ordered_profile)):
             return None
         spec = PathFinder.find_spec(name, path, target)
         if spec is None or spec.loader is None:
@@ -159,6 +165,9 @@ class DialectProbe:
         literals = LiteralStatements(relative_path, instrument=True)
         if literal_profile:
             tree = literals.visit(tree)
+        ordered = OrderedComparisons(relative_path, instrument=True)
+        if ordered_profile:
+            tree = ordered.visit(tree)
         code = compile(ast.fix_missing_locations(tree), spec.origin, "exec", dont_inherit=True)
 
         def execute(module):
@@ -167,7 +176,8 @@ class DialectProbe:
             module.__dict__["_blast_radius_identity"] = self.identity.compare
             module.__dict__["_blast_radius_guard"] = self.guard
             module.__dict__["_blast_radius_literal"] = self.literal_assignment
-            self.scope().update(comparisons.sites | guards.sites | literals.sites)
+            module.__dict__["_blast_radius_ordered"] = self.ordered
+            self.scope().update(comparisons.sites | guards.sites | literals.sites | ordered.sites)
             exec(code, module.__dict__)
             attach_factory_calls(module)
 

@@ -10,6 +10,7 @@ from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filtered_dependency
 from identity_comparisons import pure_equivalent
 from impact import Impact
+from ordered_comparisons import observe_order
 
 
 class ImpactTest(unittest.TestCase):
@@ -17,7 +18,7 @@ class ImpactTest(unittest.TestCase):
         self, before, after, imports=None, collection=(), *,
         path="sqlglot/parsers/example.py", expression_validators=None, dialect_reads=None,
         identity_reads=None, factory_calls=None, guard_reads=None, literal_reads=None, fixture_reads=None,
-        cached_source=None,
+        cached_source=None, ordered_reads=None,
     ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
@@ -51,9 +52,10 @@ class ImpactTest(unittest.TestCase):
             coverage["literal_coverage"] = True
             for test_id, dependencies in literal_reads.items():
                 coverage["tests"][test_id].extend(dependencies)
-        if fixture_reads is not None:
-            for test_id, dependencies in fixture_reads.items():
-                coverage["tests"][test_id].extend(dependencies)
+        for reads in (fixture_reads, ordered_reads):
+            if reads is not None:
+                for test_id, dependencies in reads.items():
+                    coverage["tests"][test_id].extend(dependencies)
         diff = f"diff --git a/{path} b/{path}\n" + "".join(
             unified_diff(
                 before.splitlines(keepends=True), after.splitlines(keepends=True),
@@ -310,11 +312,64 @@ class ImpactTest(unittest.TestCase):
             guard_reads={"unrelated": [(f"@guard-read:{path}:2:7", 0)]},
         ))
 
+    def test_equality_guard_selects_tests_that_reach_elif(self):
+        path = "sqlglot/generators/example.py"
+        before = "def check(kind):\n    if not kind:\n        return None\n    elif kind == 'TABLE':\n        return kind\n"
+        after = before.replace("==", "!=")
+        registration = (f"@guard-site:{path}:4:9", 0)
+        read = (f"@guard-read:{path}:4:9", 0)
+        self.assertEqual(self.select(
+            before, after, collection=[registration], path=path, guard_reads={"unrelated": [read]},
+        ), {8})
+        self.assertEqual(self.select(
+            before, after, collection=[registration], path=path, guard_reads={},
+        ), set())
+        self.assertEqual(self.select(
+            before, after.replace("TABLE", "VIEW"), collection=[registration], path=path, guard_reads={},
+        ), {4})
+
     def test_function_edit_changing_lazy_import_falls_back(self):
         before = "def check():\n    return True\n"
         after = before.replace("    return", "    import external\n    return")
         self.assertIsNone(self.select(before, after))
         self.assertIsNone(self.select(after, before))
+
+    def test_ordered_comparison_uses_boundary_and_keeps_unknown_callers(self):
+        path = "sqlglot/generators/example.py"
+        before = "def check(version):\n    return version < (23, 12)\n"
+        after = before.replace("<", "<=")
+        site = f"{path}:2:11"
+        registration = (f"@ordered-site:{site}", 0)
+        boundary = (f"@ordered-boundary:{site}", 0)
+        unsafe = (f"@ordered-unsafe:{site}", 0)
+        options = {"path": path, "collection": [registration]}
+        self.assertEqual(self.select(before, after, **options), set())
+        self.assertEqual(self.select(before, after, ordered_reads={"unrelated": [boundary]}, **options), {8})
+        self.assertEqual(self.select(before, after, ordered_reads={"unrelated": [unsafe]}, **options), {4, 8})
+        self.assertEqual(self.select(before, after.replace("23", "24"), **options), {4})
+        self.assertIsNone(self.select(before, after, collection=[registration, boundary], path=path))
+
+    def test_ordered_probe_preserves_original_comparison(self):
+        calls = []
+        result = object()
+
+        class CustomTuple(tuple):
+            def __lt__(self, other):
+                calls.append("lt")
+                return result
+
+            def __eq__(self, other):
+                calls.append("eq")
+                return False
+
+        scope = set()
+        self.assertFalse(observe_order(scope, (23, 12, 0), (23, 12), "lt", "site"))
+        self.assertFalse(observe_order(scope, (23, 12, 0), (23, 12), "le", "site"))
+        self.assertEqual(scope, set())
+        self.assertTrue(observe_order(scope, 3, 3, "le", "site"))
+        self.assertIs(observe_order(scope, CustomTuple((23, 12)), (23, 12), "lt", "site"), result)
+        self.assertEqual(calls, ["lt"])
+        self.assertEqual(scope, {("@ordered-boundary:site", 0), ("@ordered-unsafe:site", 0)})
 
     def test_local_literal_selects_executed_assignments(self):
         path = "sqlglot/generators/example.py"

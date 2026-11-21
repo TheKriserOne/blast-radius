@@ -18,6 +18,7 @@ from fixture_reads import filter_comments, filtered_dependency
 from guard_comparisons import changed_guards, supports_guard_profile
 from identity_comparisons import changed_identity_sites, supports_identity_profile
 from literal_statements import changed_local_literals, supports_literal_profile
+from ordered_comparisons import changed_ordered_sites, supports_ordered_profile
 
 FILE_HEADER = re.compile(
     r"a/([\w./-]+) b/\1\n(?:index [^\n]*\n)?--- a/\1\n\+\+\+ b/\1\n(?=@@ )",
@@ -163,6 +164,10 @@ class Impact:
             path.removeprefix("@literal-site:") for path, _ in all_dependencies
             if path.startswith("@literal-site:")
         }
+        self.ordered_sites = {
+            path.removeprefix("@ordered-site:") for path, _ in all_dependencies
+            if path.startswith("@ordered-site:")
+        }
         self.factory_evidence = {
             dep for dep in all_dependencies if dep[0].startswith("@factory:")
         }
@@ -263,6 +268,27 @@ class Impact:
             | {(f"@guard-read:{site}", 0) for site in sites}
         )
 
+    def ordered_dependencies(self, path, source, updated, changed_ranges):
+        if not self.ordered_sites or not supports_ordered_profile(path.replace("/", ".")):
+            return None
+        sites, code_lines = changed_ordered_sites(path, source, updated)
+        if not sites or not sites <= self.ordered_sites:
+            return None
+        dependencies = (
+            {(path, 0)}
+            | {(f"@identity-code:{path}:{line}", 0) for line in code_lines}
+            | {(f"@ordered-boundary:{site}", 0) for site in sites}
+            | {(f"@ordered-unsafe:{site}", 0) for site in sites}
+        )
+        if any((f"@ordered-unsafe:{site}", 0) in self.dependents for site in sites):
+            # Fall back to callers of the changed functions, retaining code readers.
+            dependencies.update(
+                (path, line)
+                for start, end in changed_ranges
+                for line in self.lines[path] if start <= line <= end
+            )
+        return dependencies
+
     def literal_dependencies(self, path, source, updated):
         if not self.has_literal_coverage or not supports_literal_profile(path.replace("/", ".")):
             return None
@@ -332,6 +358,8 @@ class Impact:
                             changed_ranges.append((start, end))
                     if len(changes) == 2 and (changed_ranges or not same_structure):
                         profiled_deps = self.identity_dependencies(path, source, updated)
+                        if profiled_deps is None and same_structure and ("<=" in change or ">=" in change):
+                            profiled_deps = self.ordered_dependencies(path, source, updated, changed_ranges)
                         if profiled_deps is None and same_structure:
                             profiled_deps = self.guard_dependencies(path, source, updated)
                         if profiled_deps is None and same_structure:

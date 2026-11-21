@@ -1,4 +1,4 @@
-"""Scope Boolean guard edits to tests that reached the condition."""
+"""Scope Boolean and equality guard edits to tests that reached the condition."""
 
 import ast
 
@@ -6,18 +6,22 @@ from identity_comparisons import enclosing_code_lines, location
 
 
 def supports_guard_profile(module):
-    return module == "sqlglot.parser" or module.startswith("sqlglot.parsers.")
+    return module == "sqlglot.parser" or module.startswith(("sqlglot.parsers.", "sqlglot.generators."))
 
 
-def boolean_guard(node):
-    return (
-        isinstance(node, ast.If)
-        and isinstance(node.test, ast.BoolOp)
-        and not any(
-            isinstance(part, (ast.NamedExpr, ast.Yield, ast.YieldFrom, ast.Await))
-            for part in ast.walk(node.test)
-        )
-    )
+def guard_operator(node):
+    if not isinstance(node, ast.If):
+        return None
+    test = node.test
+    if isinstance(test, ast.BoolOp):
+        operator = test.op
+    elif isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], (ast.Eq, ast.NotEq)):
+        operator = test.ops[0]
+    else:
+        return None
+    if any(isinstance(part, (ast.NamedExpr, ast.Yield, ast.YieldFrom, ast.Await)) for part in ast.walk(test)):
+        return None
+    return operator
 
 
 def guard_structure(module, path):
@@ -32,9 +36,12 @@ def guard_structure(module, path):
             )
         elif isinstance(node, ast.ClassDef):
             local_scope = False
-        if local_scope and boolean_guard(node):
-            operators[location(path, node.test)] = type(node.test.op)
-            node.test.op = ast.And()
+        if local_scope and (operator := guard_operator(node)) is not None:
+            operators[location(path, node.test)] = type(operator)
+            if isinstance(node.test, ast.BoolOp):
+                node.test.op = ast.And()
+            else:
+                node.test.ops[0] = ast.Eq()
         pending.extend((child, local_scope) for child in ast.iter_child_nodes(node))
     return ast.dump(module), operators
 
@@ -57,7 +64,7 @@ class GuardReads(ast.NodeTransformer):
 
     def visit_If(self, node):
         self.generic_visit(node)
-        if not boolean_guard(node):
+        if guard_operator(node) is None:
             return node
         site = location(self.path, node.test)
         self.sites.add((f"@guard-site:{site}", 0))
