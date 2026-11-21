@@ -5,6 +5,8 @@ import sys
 from importlib.machinery import PathFinder
 from pathlib import Path
 
+from factory_probe import attach_factory_calls
+from guard_comparisons import GuardReads, supports_guard_profile
 from identity_comparisons import IdentityProbe, IdentityReads, supports_identity_profile
 
 
@@ -63,7 +65,10 @@ class DialectProbe:
         self.identity = IdentityProbe(baseline, scope)
         self.week_tags = {}
         self.escape_owners = {}
-        if any(module in MODULES or supports_identity_profile(module) for module in sys.modules):
+        if any(
+            module in MODULES or supports_identity_profile(module) or supports_guard_profile(module)
+            for module in sys.modules
+        ):
             raise RuntimeError("Dialect profiling began after SQLGlot was loaded")
         sys.meta_path.insert(0, self)
 
@@ -111,9 +116,13 @@ class DialectProbe:
             dependencies.add((f"@numeric-unknown:{key}", 0))
         return value
 
+    def guard(self, site):
+        self.scope().add((f"@guard-read:{site}", 0))
+
     def find_spec(self, name, path=None, target=None):
         identity_profile = supports_identity_profile(name)
-        if name not in MODULES and not identity_profile:
+        guard_profile = supports_guard_profile(name)
+        if name not in MODULES and not identity_profile and not guard_profile:
             return None
         spec = PathFinder.find_spec(name, path, target)
         if spec is None or spec.loader is None:
@@ -130,14 +139,19 @@ class DialectProbe:
         comparisons = IdentityReads(relative_path)
         if identity_profile:
             tree = comparisons.visit(tree)
+        guards = GuardReads(relative_path)
+        if guard_profile:
+            tree = guards.visit(tree)
         code = compile(ast.fix_missing_locations(tree), spec.origin, "exec", dont_inherit=True)
 
         def execute(module):
             module.__dict__["_blast_radius_week_offset"] = self.week_offset
             module.__dict__["_blast_radius_numeric_escape"] = self.numeric_escape
             module.__dict__["_blast_radius_identity"] = self.identity.compare
-            self.scope().update(comparisons.sites)
+            module.__dict__["_blast_radius_guard"] = self.guard
+            self.scope().update(comparisons.sites | guards.sites)
             exec(code, module.__dict__)
+            attach_factory_calls(module)
 
         spec.loader.exec_module = execute
         return spec

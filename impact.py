@@ -10,6 +10,7 @@ from dialect_fields import changed_dialect_fields
 from expression_arguments import changed_expression_validators
 from factory_changes import factory_argument_structure
 from factory_probe import changed_show_entries, opaque as factory_opaque, tag as factory_tag
+from guard_comparisons import changed_guards, supports_guard_profile
 from identity_comparisons import changed_identity_sites, supports_identity_profile
 
 FILE_HEADER = re.compile(
@@ -94,6 +95,7 @@ class Impact:
         self.has_expression_validation = coverage.get("expression_validation", False)
         self.has_dialect_fields = coverage.get("dialect_fields", False)
         self.has_identity_comparisons = coverage.get("identity_comparisons", False)
+        self.has_guard_coverage = coverage.get("guard_coverage", False)
         self.has_factory_calls = coverage.get("factory_calls", False)
         decode_dependency = tuple
         if "dependencies" in coverage:
@@ -138,6 +140,10 @@ class Impact:
         self.identity_sites = {
             path.removeprefix("@identity-site:") for path, _ in all_dependencies
             if path.startswith("@identity-site:")
+        }
+        self.guard_sites = {
+            path.removeprefix("@guard-site:") for path, _ in all_dependencies
+            if path.startswith("@guard-site:")
         }
         self.factory_evidence = {
             dep for dep in all_dependencies if dep[0].startswith("@factory:")
@@ -217,6 +223,18 @@ class Impact:
             | {(f"@identity-unsafe:{site}", 0) for site in sites}
         )
 
+    def guard_dependencies(self, path, source, updated):
+        if not self.has_guard_coverage or not supports_guard_profile(path.replace("/", ".")):
+            return None
+        sites, code_lines = changed_guards(path, source, updated)
+        if not sites or not sites <= self.guard_sites:
+            return None
+        return (
+            {(path, 0)}
+            | {(f"@identity-code:{path}:{line}", 0) for line in code_lines}
+            | {(f"@guard-read:{site}", 0) for site in sites}
+        )
+
     def factory_call_dependencies(self, path, source, updated):
         if not self.has_factory_calls or factory_opaque(path) in self.factory_evidence:
             return None
@@ -253,11 +271,13 @@ class Impact:
                     updated = apply_hunks(source, change[header.end():])
                     after = FunctionBodies(updated, path)
                     if len(changes) == 2:
-                        comparison_deps = self.identity_dependencies(path, source, updated)
-                        if comparison_deps is not None:
-                            if comparison_deps & self.collection:
+                        profiled_deps = self.identity_dependencies(path, source, updated)
+                        if profiled_deps is None:
+                            profiled_deps = self.guard_dependencies(path, source, updated)
+                        if profiled_deps is not None:
+                            if profiled_deps & self.collection:
                                 return None
-                            return selected.union(*(self.dependents.get(d, ()) for d in comparison_deps))
+                            return selected.union(*(self.dependents.get(d, ()) for d in profiled_deps))
                     if before.structure != after.structure:
                         if len(changes) != 2:
                             return None

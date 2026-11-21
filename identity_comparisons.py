@@ -53,14 +53,18 @@ def changed_identity_sites(path, source, updated):
         if old is not ast.Is or new is not ast.Eq:
             return set(), set()
         changed.add(site)
-    lines = {int(site.rsplit(":", 2)[1]) for site in changed}
+    return changed, enclosing_code_lines(module, changed)
+
+
+def enclosing_code_lines(module, sites):
+    lines = {int(site.rsplit(":", 2)[1]) for site in sites}
     code_lines = {1}
     for node in ast.walk(module):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
             start = min([node.lineno, *(d.lineno for d in getattr(node, "decorator_list", ()))])
             if any(start <= line <= node.end_lineno for line in lines):
                 code_lines.add(start)
-    return changed, code_lines
+    return code_lines
 
 
 class IdentityReads(ast.NodeTransformer):
@@ -164,5 +168,5 @@ class IdentityProbe:
         filename = code.co_filename
         if filename.startswith(self.prefix):
             path = filename.removeprefix(self.prefix)
-            if supports_identity_profile(path.replace("/", ".")):
+            if path.startswith("sqlglot/parsers/") or supports_identity_profile(path.replace("/", ".")):
                 self.scope().add((f"@identity-code:{path}:{code.co_firstlineno}", 0))

@@ -14,7 +14,7 @@ class ImpactTest(unittest.TestCase):
     def select(
         self, before, after, imports=None, collection=(), *,
         path="sqlglot/parsers/example.py", expression_validators=None, dialect_reads=None,
-        identity_reads=None, factory_calls=None,
+        identity_reads=None, factory_calls=None, guard_reads=None,
     ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
@@ -39,6 +39,10 @@ class ImpactTest(unittest.TestCase):
         if factory_calls is not None:
             coverage["factory_calls"] = True
             for test_id, dependencies in factory_calls.items():
+                coverage["tests"][test_id].extend(dependencies)
+        if guard_reads is not None:
+            coverage["guard_coverage"] = True
+            for test_id, dependencies in guard_reads.items():
                 coverage["tests"][test_id].extend(dependencies)
         diff = f"diff --git a/{path} b/{path}\n" + "".join(
             unified_diff(
@@ -236,3 +240,25 @@ class ImpactTest(unittest.TestCase):
         self.assertFalse(pure_equivalent(text, Text("same"), False))
         self.assertTrue(pure_equivalent(text, text, True))
         self.assertEqual(calls, [])
+
+    def test_boolean_guard_selects_tests_that_reach_the_condition(self):
+        path = "sqlglot/parsers/example.py"
+        before = "def check(rest, current):\n    if rest and current:\n        return current\n"
+        after = before.replace("and", "or")
+        site = f"{path}:2:7"
+        registration = (f"@guard-site:{site}", 0)
+        read = (f"@guard-read:{site}", 0)
+        reads = {"unrelated": [read]}
+        self.assertEqual(self.select(
+            before, after, collection=[registration], path=path, guard_reads=reads,
+        ), {8})
+        self.assertEqual(self.select(
+            before, after, path=path, guard_reads=reads,
+        ), {4})
+        self.assertEqual(self.select(
+            before, after.replace("or current", "or not current"),
+            collection=[registration], path=path, guard_reads=reads,
+        ), {4})
+        self.assertIsNone(self.select(
+            before, after, collection=[registration, read], path=path, guard_reads=reads,
+        ))

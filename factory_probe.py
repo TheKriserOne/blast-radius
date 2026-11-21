@@ -3,7 +3,6 @@
 import ast
 from copy import deepcopy
 import gzip
-from importlib.machinery import PathFinder
 import json
 import os
 from pathlib import Path
@@ -93,29 +92,12 @@ class FactoryProbe:
         self.scope = None
         self.by_function = {}
         self.by_code_id = {}
-        sys.meta_path.insert(0, self)
         sys.addaudithook(self.audit)
         for name in self.modules.keys() & sys.modules.keys():
             self.mark_opaque(self.modules[name][0])
 
     def mark_opaque(self, path):
         (self.pending if self.scope is None else self.scope()).add(opaque(path))
-
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname not in self.modules:
-            return None
-        spec = PathFinder.find_spec(fullname, path, target)
-        if spec is None or spec.loader is None:
-            self.mark_opaque(self.modules[fullname][0])
-            return spec
-        execute = spec.loader.exec_module
-
-        def exec_module(module):
-            execute(module)
-            self.attach(module)
-
-        spec.loader.exec_module = exec_module
-        return spec
 
     def attach(self, module):
         source_path, entries = self.modules[module.__name__]
@@ -174,3 +156,8 @@ def observe_factory_calls(baseline, scope=None):
         _probe.pending.clear()
         _probe.scope = scope
     return _probe
+
+
+def attach_factory_calls(module):
+    if _probe is not None and module.__name__ in _probe.modules:
+        _probe.attach(module)

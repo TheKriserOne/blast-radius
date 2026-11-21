@@ -42,6 +42,8 @@ make check    # the output's format only
 
 For an identity-to-equality edit at a profiled comparison, the selector includes tests with a different observed result, an unverified equality method, or direct access to the modified source or code. The baseline probe evaluates only verified pure comparisons.
 
+For an isolated `and`/`or` change in a profiled parser guard, the selector includes tests that reach the condition and tests that inspect the source or enclosing code.
+
 `import_map.json.gz` records which tests use modules and which parser factories only create closures. The selector uses that map for same-type literal edits to those factory calls. For observed `SHOW_PARSERS` entries it can use exact calls recorded in the coverage map, with module-level selection when that trace is incomplete.
 
 Run `make imports` and then `make coverage` to regenerate the maps from the checked-in baseline data. Ordinary builds reuse both maps. Run `python3 -m unittest test_impact` to check patch classification.

@@ -187,6 +187,7 @@ class Coverage:
             "expression_validation": self.expression_validation,
             "dialect_fields": self.expression_validation,
             "identity_comparisons": self.expression_validation,
+            "guard_coverage": self.expression_validation,
             "factory_calls": self.factory_probe is not None,
             "collection": sorted(self.collection),
             "tests": {
@@ -213,12 +214,14 @@ def pack_coverage(directory, output):
     expression_validation = True
     dialect_fields = True
     identity_comparisons = True
+    guard_coverage = True
     factory_calls = True
     for path in directory.glob("*.json"):
         shard = json.loads(path.read_text())
         expression_validation &= shard.get("expression_validation") is True
         dialect_fields &= shard.get("dialect_fields") is True
         identity_comparisons &= shard.get("identity_comparisons") is True
+        guard_coverage &= shard.get("guard_coverage") is True
         factory_calls &= shard.get("factory_calls") is True
         collection.update(map(tuple, shard["collection"]))
         for nodeid, dependencies in shard["tests"].items():
@@ -234,6 +237,7 @@ def pack_coverage(directory, output):
         "expression_validation": bool(tests) and expression_validation,
         "dialect_fields": bool(tests) and dialect_fields,
         "identity_comparisons": bool(tests) and identity_comparisons,
+        "guard_coverage": bool(tests) and guard_coverage,
         "factory_calls": bool(tests) and factory_calls,
         "dependencies": dependency_table,
         "collection": sorted(dependency_numbers[dependency] for dependency in collection),
