@@ -44,7 +44,7 @@ When a flag makes an expression argument required, the selector includes tests t
 
 For an identity-to-equality edit at a profiled comparison, the selector includes tests with a different observed result, an unverified equality method, or direct access to the modified source or code. The baseline probe evaluates only verified pure comparisons.
 
-For an isolated `and`/`or` or `==`/`!=` change in a profiled guard, the selector includes tests that reach the condition. It uses the same approach for same-type literal edits in local assignments, return values, and direct arguments of returned calls. Both rules include tests that inspect the source or enclosing code. If an edited function contains a lazy import, the selector schedules the full suite because the import can affect later tests.
+For an isolated `and`/`or` or `==`/`!=` change, or an added or removed leading `not` in a profiled guard, the selector includes tests that reach the condition. It uses the same approach for same-type literal edits in local assignments, return values, and direct arguments of returned calls. Both rules include tests that inspect the source or enclosing code. If an edited function contains a lazy import, the selector schedules the full suite because the import can affect later tests.
 
 For a strict-to-inclusive comparison edit or its reverse, the selector checks where the operands were equal. It uses that evidence for comparisons against literal integers or integer tuples with verified operand types. It keeps function-level coverage when a test uses an unverified operand.
 

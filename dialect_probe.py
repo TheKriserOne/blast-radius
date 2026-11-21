@@ -7,7 +7,7 @@ from importlib.machinery import PathFinder
 from pathlib import Path
 
 from factory_probe import attach_factory_calls
-from guard_comparisons import GuardReads, supports_guard_profile
+from guard_comparisons import GuardComparisons, supports_guard_profile
 from identity_comparisons import IdentityProbe, IdentityReads, supports_identity_profile
 from literal_statements import LiteralStatements, supports_literal_profile
 from ordered_comparisons import OrderedComparisons, observe_order, supports_ordered_profile
@@ -159,7 +159,7 @@ class DialectProbe:
         comparisons = IdentityReads(relative_path)
         if identity_profile:
             tree = comparisons.visit(tree)
-        guards = GuardReads(relative_path)
+        guards = GuardComparisons(relative_path, instrument=True)
         if guard_profile:
             tree = guards.visit(tree)
         literals = LiteralStatements(relative_path, instrument=True)

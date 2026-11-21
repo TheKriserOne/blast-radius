@@ -446,6 +446,28 @@ class ImpactTest(unittest.TestCase):
             before, after.replace("TABLE", "VIEW"), collection=[registration], path=path, guard_reads={},
         ), {4})
 
+    def test_leading_not_selects_tests_that_reach_the_guard(self):
+        path = "sqlglot/generators/example.py"
+        before = "def check(ready, value):\n    if ready:\n        if value:\n            return value\n"
+        after = before.replace("if value:", "if not value:")
+        site = f"{path}:3:11"
+        registration = (f"@guard-site:{site}", 0)
+        read = (f"@guard-read:{site}", 0)
+        reads = {"unrelated": [read]}
+        for old, new in ((before, after), (after, before)):
+            self.assertEqual(self.select(
+                old, new, collection=[registration], path=path, guard_reads=reads,
+            ), {8})
+        self.assertEqual(self.select(
+            before, after.replace("not value", "not ready"),
+            collection=[registration], path=path, guard_reads=reads,
+        ), {4})
+        combined = before.replace("if value:", "if value and ready:")
+        self.assertEqual(self.select(
+            combined, combined.replace("value and ready", "not (value or ready)"),
+            collection=[registration], path=path, guard_reads=reads,
+        ), {4})
+
     def test_function_edit_changing_lazy_import_falls_back(self):
         before = "def check():\n    return True\n"
         after = before.replace("    return", "    import external\n    return")

@@ -31,7 +31,9 @@ UNTRACED = ("*", 0)
 
 def mask_guard_operators(body):
     """Coarse normalization used only to reject impossible guard-only edits."""
-    return body.replace("BoolOp(op=Or()", "BoolOp(op=And()").replace("ops=[NotEq()]", "ops=[Eq()]")
+    # Removing closing parentheses also masks the extra parenthesis around a leading not.
+    return (body.replace("BoolOp(op=Or()", "BoolOp(op=And()").replace("ops=[NotEq()]", "ops=[Eq()]")
+            .replace("UnaryOp(op=Not(), operand=", "").replace(")", ""))
 
 
 def physical_lines(text):
