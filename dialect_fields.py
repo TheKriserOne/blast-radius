@@ -3,6 +3,9 @@
 import ast
 
 
+TYPE_MEMBERS_SOURCE = "sqlglot/expressions/datatypes.py"
+
+
 def integer_literal(node):
     if isinstance(node, ast.Constant) and type(node.value) is int:
         return node.value
@@ -80,6 +83,7 @@ def changed_dialect_fields(path, source, updated):
 
 def type_mapping_structure(module, module_name):
     values = {}
+    owners = set()
     for cls in module.body:
         if not isinstance(cls, ast.ClassDef) or cls.decorator_list:
             continue
@@ -90,6 +94,11 @@ def type_mapping_structure(module, module_name):
                     pass
                 case _:
                     continue
+            owner = f"{module_name}.{cls.name}"
+            if owner in owners:
+                return None, {}
+            owners.add(owner)
+            keys, expressions = [], []
             for key, value in zip(table.keys, table.values):
                 if (
                     isinstance(key, ast.Attribute)
@@ -97,11 +106,15 @@ def type_mapping_structure(module, module_name):
                     and isinstance(key.value.value, ast.Name) and key.value.value.id == "exp"
                     and isinstance(value, ast.Constant) and type(value.value) is str
                 ):
-                    field = f"@type-map:{module_name}.{cls.name}:{key.attr}"
+                    field = f"@type-map:{owner}:{key.attr}"
                     if field in values:
                         return None, {}
-                    values[field] = value.value
-                    value.value = ""
+                    # Moving past a spread can change which value wins.
+                    values[field] = value.value, len(keys)
+                else:
+                    keys.append(key)
+                    expressions.append(value)
+            table.keys, table.values = keys, expressions
     return ast.dump(module), values
 
 
@@ -109,6 +122,14 @@ def changed_type_mappings(path, source, updated):
     module_name = path.removesuffix(".py").replace("/", ".")
     before, original = type_mapping_structure(ast.parse(source.encode("utf-8"), path), module_name)
     after, replacement = type_mapping_structure(ast.parse(updated.encode("utf-8"), path), module_name)
-    if before is None or before != after or original.keys() != replacement.keys():
-        return set()
-    return {tag for tag, value in original.items() if value != replacement[tag]}
+    if before is None or before != after:
+        return set(), set()
+    added = replacement.keys() - original.keys()
+    owners = {tag.rsplit(":", 1)[0] for tag in original}
+    if any(tag.rsplit(":", 1)[0] not in owners for tag in added):
+        return set(), set()
+    fields = {
+        tag for tag in original.keys() | replacement.keys()
+        if original.get(tag) != replacement.get(tag)
+    }
+    return fields, {tag.rsplit(":", 1)[1] for tag in added}

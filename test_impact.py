@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from build_syntax import build_syntax
+from dialect_fields import TYPE_MEMBERS_SOURCE
 from expression_arguments import possible_argument_classes
 from expression_probe import missing_optional_arguments
 from factory_probe import opaque as factory_opaque, tag as factory_tag
@@ -21,7 +22,7 @@ class ImpactTest(unittest.TestCase):
         self, before, after, imports=None, collection=(), *,
         path="sqlglot/parsers/example.py", expression_validators=None, dialect_reads=None,
         identity_reads=None, factory_calls=None, guard_reads=None, literal_reads=None, fixture_reads=None,
-        cached_source=None, ordered_reads=None, argument_presence=False, extra_changes=(),
+        cached_source=None, ordered_reads=None, argument_presence=False, extra_changes=(), type_members=(),
     ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
@@ -72,10 +73,15 @@ class ImpactTest(unittest.TestCase):
                     original.splitlines(keepends=True), updated.splitlines(keepends=True),
                     fromfile=f"a/{file}", tofile=f"b/{file}",
                 ))
-            if cached_source is not None:
+            if type_members:
+                dtype_source = root / TYPE_MEMBERS_SOURCE
+                dtype_source.parent.mkdir(parents=True, exist_ok=True)
+                dtype_source.write_text("# test type member registry\n", encoding="utf-8")
+            if cached_source is not None or type_members:
                 source = root / path
-                source.write_text(cached_source, encoding="utf-8")
-                build_syntax(root)
+                if cached_source is not None:
+                    source.write_text(cached_source, encoding="utf-8")
+                build_syntax(root, type_members)
                 source.write_text(before, encoding="utf-8")
             coverage_file = root / "coverage.json.gz"
             coverage_file.write_bytes(gzip.compress(json.dumps(coverage).encode("utf-8")))
@@ -444,6 +450,30 @@ class ImpactTest(unittest.TestCase):
             reads["dependent"].append(reader)
             self.assertEqual(self.select(before, after, **options), {4, 8})
             reads["dependent"].pop()
+
+    def test_type_mapping_key_edits_use_hits_and_misses_for_valid_members(self):
+        path = "sqlglot/generators/example.py"
+        before = (
+            "class Example:\n"
+            "    TYPE_MAPPING = {exp.DType.TEXT: 'STRING', **Base.TYPE_MAPPING, exp.DType.BLOB: 'BINARY'}\n"
+        )
+        owner = "sqlglot.generators.example.Example"
+        reads = {
+            "dependent": [(f"@type-map-owner:{owner}", 0), (f"@type-map:{owner}:TEXT", 0)],
+            "unrelated": [(f"@type-map:{owner}:DATE", 0)],
+        }
+        registered = [("@type-map-sites:sqlglot.generator", 0), ("@type-map-sites:sqlglot.expressions.builders", 0)]
+        options = {"path": path, "collection": registered, "dialect_reads": reads}
+        members = ("TEXT", "BLOB", "DATE", "TIMETZ")
+        rename = before.replace("exp.DType.TEXT", "exp.DType.DATE")
+        self.assertIsNone(self.select(before, rename, **options))
+        self.assertEqual(self.select(before, rename, type_members=members, **options), {4, 8})
+        self.assertIsNone(self.select(before, rename.replace("DType.DATE", "DType.INVALID"), type_members=members, **options))
+        self.assertEqual(self.select(before, before.replace("exp.DType.TEXT: 'STRING', ", ""), **options), {4})
+        moved = before.replace("exp.DType.TEXT: 'STRING', **Base.TYPE_MAPPING", "**Base.TYPE_MAPPING, exp.DType.TEXT: 'STRING'")
+        self.assertEqual(self.select(before, moved, **options), {4})
+        added = before.replace("**Base.TYPE_MAPPING,", "**Base.TYPE_MAPPING, exp.DType.TIMETZ: 'TIME',")
+        self.assertEqual(self.select(before, added, type_members=members, **options), set())
 
     def test_identity_rewrite_keeps_uncertified_tests_and_code_readers(self):
         path = "sqlglot/executor/example.py"

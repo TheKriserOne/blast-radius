@@ -40,7 +40,7 @@ make check    # the output's format only
 
 `coverage.json.gz` contains per-test function and file dependencies captured on the pinned checkout. It also records expression validation, dialect week-offset reads, and numeric escape lookups by dictionary owner and key. The selector uses successful and missed lookups to scope escape key edits when the table stays nonempty and keeps the same `x`, `0`, and `u` membership. It uses the full suite when an affected read runs during collection.
 
-For string value edits in generator type maps, the selector uses the type keys read during SQL generation and cast construction. It includes derived generators that inherit or copy the changed table.
+For edits to literal entries in generator type maps, the selector uses type lookups from SQL generation and cast construction. It includes derived generators that inherit or copy the changed table. Added keys must be valid types from the pinned enum.
 
 When a flag makes an expression argument required, the selector includes tests that validated the expression with that argument missing. It also retains validations with custom behavior or multiple missing required arguments, since the change can reorder their errors.
 

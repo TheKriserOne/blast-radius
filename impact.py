@@ -10,7 +10,7 @@ from hashlib import sha256
 from types import SimpleNamespace
 from zipfile import BadZipFile, ZipFile
 
-from dialect_fields import changed_dialect_fields, changed_type_mappings
+from dialect_fields import TYPE_MEMBERS_SOURCE, changed_dialect_fields, changed_type_mappings
 from expression_arguments import changed_expression_validators
 from factory_changes import factory_argument_structure
 from factory_probe import changed_show_entries, opaque as factory_opaque, tag as factory_tag
@@ -337,9 +337,14 @@ class Impact:
             path == "sqlglot/generator.py" or path.startswith("sqlglot/generators/")
         ):
             return None
-        fields = changed_type_mappings(path, source, updated)
+        fields, added = changed_type_mappings(path, source, updated)
         if not fields:
             return None
+        if added:
+            enum_source = (self.baseline / TYPE_MEMBERS_SOURCE).read_bytes().decode("utf-8")
+            members = self.cached_profile("type-members", TYPE_MEMBERS_SOURCE, enum_source)
+            if members is None or not added.issubset(members):
+                return None
         for field in fields:
             _, owner, _ = field.split(":", 2)
             marker = (f"@type-map-owner:{owner}", 0)

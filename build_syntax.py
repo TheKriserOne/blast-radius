@@ -6,6 +6,7 @@ from hashlib import sha256
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
+from dialect_fields import TYPE_MEMBERS_SOURCE
 from guard_comparisons import guard_structure, supports_guard_profile
 from identity_comparisons import identity_structure, supports_identity_profile
 from impact import FunctionBodies
@@ -22,8 +23,12 @@ MATCHERS = (
 )
 
 
-def build_syntax(baseline):
+def build_syntax(baseline, type_members=()):
     with ZipFile(baseline / "syntax.zip", "w") as archive:
+        if type_members:
+            raw = (baseline / TYPE_MEMBERS_SOURCE).read_bytes()
+            data = marshal.dumps((sha256(raw).digest(), type_members))
+            archive.writestr(ZipInfo(f"{PROFILE_DIRECTORY}/type-members/{TYPE_MEMBERS_SOURCE}"), data)
         for path in sorted((baseline / "sqlglot").rglob("*.py")):
             relative = path.relative_to(baseline).as_posix()
             raw = path.read_bytes()
@@ -49,4 +54,9 @@ def build_syntax(baseline):
 
 
 if __name__ == "__main__":
-    build_syntax(Path(sys.argv[1]))
+    baseline = Path(sys.argv[1]).resolve()
+    sys.path.insert(0, str(baseline))
+    from sqlglot.expressions import DType
+
+    members = tuple(sorted(name for name, member in DType.__members__.items() if name == member.name))
+    build_syntax(baseline, members)
