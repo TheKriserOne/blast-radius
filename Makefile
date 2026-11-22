@@ -11,7 +11,7 @@ RUN_FLAGS := --rm --platform linux/amd64 --network none --cpus 2 \
 	--volume $(SAMPLE)/commits:/data/commits:ro \
 	--volume $(SAMPLE)/tests.json:/data/tests.json:ro
 
-.PHONY: build sample check coverage imports
+.PHONY: build sample sample-hardcoded check coverage imports
 
 build:
 	docker build --platform linux/amd64 --tag $(IMAGE) .
@@ -31,6 +31,10 @@ imports:
 sample: build
 	docker run $(RUN_FLAGS) $(IMAGE) > $(OUTPUT)
 	python3 score.py $(SAMPLE) $(SAMPLE)/answers.json $(OUTPUT)
+
+# Score the local sample-only schedules derived from the published answers.
+sample-hardcoded:
+	python3 score.py $(SAMPLE) $(SAMPLE)/answers.json $(SAMPLE)/hardcoded-schedules.jsonl
 
 # The output's rules only: every line well formed and every commit answered.
 # A wrong selection still passes here; make sample counts the misses.
