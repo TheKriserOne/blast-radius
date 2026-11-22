@@ -12,7 +12,7 @@ from dialect_fields import TYPE_MEMBERS_SOURCE
 from expression_arguments import possible_argument_classes
 from expression_probe import missing_optional_arguments
 from factory_changes import FUNCTION_BUILDERS_SOURCE
-from factory_probe import FUNCTION_TABLES, MATCHED_TABLE_SITES, STATEMENT_TABLE, TOKEN_MEMBERS_SOURCE
+from factory_probe import FUNCTION_TABLES, MATCHED_TABLE_SITES, PLACEHOLDER_TABLE, STATEMENT_TABLE, TOKEN_MEMBERS_SOURCE
 from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filtered_dependency, pair_dependency
 from identity_comparisons import pure_equivalent
@@ -758,6 +758,37 @@ class ImpactTest(unittest.TestCase):
 
         with patch(f"{__name__}.build_syntax", side_effect=write_stale_profile):
             self.assertIsNone(self.select(before, added, token_members=members, **options))
+
+    def test_placeholder_key_edits_use_canonical_token_coverage(self):
+        path = "sqlglot/parsers/example.py"
+        entry = "        TokenType.L_BRACE: lambda self: self.parse_placeholder(),\n"
+        before = (
+            "from sqlglot.tokens import TokenType\n"
+            "class Example:\n"
+            f"    {PLACEHOLDER_TABLE}: dict = {{\n"
+            f"        **Base.{PLACEHOLDER_TABLE},\n"
+            f"{entry}"
+            "    }\n"
+        )
+        owner = "sqlglot.parsers.example.Example"
+        tag, modules = FUNCTION_TABLES[PLACEHOLDER_TABLE]
+        sites = [(f"{tag}-sites:{module}", 0) for module in modules]
+        miss = (f"{tag}:{owner}:PARAMETER", 0)
+        reads = {
+            "dependent": [(f"{tag}-owner:{owner}", 0), (f"{tag}:{owner}:L_BRACE", 0)],
+            "unrelated": [miss, (path, 5)],
+        }
+        options = {"path": path, "token_members": ("L_BRACE", "PARAMETER"), "dialect_reads": reads}
+        added = before.replace(entry, entry + entry.replace("L_BRACE", "PARAMETER"))
+        self.assertEqual(self.select(before, added, collection=sites, **options), {8})
+        self.assertEqual(self.select(before, before.replace(entry, ""), collection=sites, **options), {4})
+        self.assertIsNone(self.select(before, added, collection=[*sites, miss], **options))
+        statement_tag, statement_modules = FUNCTION_TABLES[STATEMENT_TABLE]
+        legacy_sites = [(f"{statement_tag}-sites:{module}", 0) for module in statement_modules]
+        self.assertIsNone(self.select(before, added, collection=legacy_sites, **options))
+        self.assertIsNone(self.select(before, added.replace("PARAMETER", "UNKNOWN"), collection=sites, **options))
+        body_edit = before.replace("parse_placeholder", "parse_alternative")
+        self.assertEqual(self.select(before, body_edit, collection=sites, **options), {8})
 
     def test_statement_binding_and_legacy_string_table_coverage(self):
         path = "sqlglot/parsers/example.py"

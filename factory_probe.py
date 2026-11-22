@@ -14,8 +14,10 @@ PROPERTY_TABLE = "PROPERTY_PARSERS"
 ALTER_TABLE = "ALTER_PARSERS"
 ALTER_COLUMN_TABLE = "ALTER_ALTER_PARSERS"
 STATEMENT_TABLE = "STATEMENT_PARSERS"
+PLACEHOLDER_TABLE = "PLACEHOLDER_PARSERS"
 TOKEN_MEMBERS_SOURCE = "sqlglot/tokenizer_core.py"
 MATCHED_TABLE_SITES = {PROPERTY_TABLE: 6, ALTER_TABLE: 2, ALTER_COLUMN_TABLE: 1}
+TOKEN_MATCH_TABLE_SITES = {STATEMENT_TABLE: 2, PLACEHOLDER_TABLE: 1}
 FUNCTION_TABLES = {
     "FUNCTIONS": ("@parser-functions", {
         "sqlglot.anonymize",
@@ -29,6 +31,7 @@ FUNCTION_TABLES = {
     ALTER_TABLE: ("@alter-parsers", {"sqlglot.parser"}),
     ALTER_COLUMN_TABLE: ("@alter-alter-parsers", {"sqlglot.parser"}),
     STATEMENT_TABLE: ("@statement-parsers", {"sqlglot.parser"}),
+    PLACEHOLDER_TABLE: ("@placeholder-parsers", {"sqlglot.parser"}),
 }
 SHOW_TABLE = "SHOW_PARSERS"
 _probe = None

@@ -13,7 +13,7 @@ from zipfile import BadZipFile, ZipFile
 from dialect_fields import TYPE_MEMBERS_SOURCE, changed_dialect_fields, changed_type_mappings
 from expression_arguments import changed_expression_validators
 from factory_changes import FUNCTION_BUILDERS_SOURCE, changed_function_keys, factory_argument_structure
-from factory_probe import FUNCTION_TABLES, STATEMENT_TABLE, TOKEN_MEMBERS_SOURCE, changed_show_entries
+from factory_probe import FUNCTION_TABLES, TOKEN_MATCH_TABLE_SITES, TOKEN_MEMBERS_SOURCE, changed_show_entries
 from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filter_comments, filtered_dependency, fixture_pairs, pair_dependency
 from guard_comparisons import changed_guards, supports_guard_profile
@@ -138,9 +138,9 @@ class FunctionBodies(ast.NodeVisitor):
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Assign(self, node):
-        # Statement handler bodies retain ordinary line coverage.
+        # Token-keyed handler bodies retain ordinary line coverage.
         if self.has_parser_tables and any(
-            isinstance(target, ast.Name) and target.id in FUNCTION_TABLES and target.id != STATEMENT_TABLE
+            isinstance(target, ast.Name) and target.id in FUNCTION_TABLES and target.id not in TOKEN_MATCH_TABLE_SITES
             for target in node.targets
         ):
             return
@@ -150,7 +150,7 @@ class FunctionBodies(ast.NodeVisitor):
         target = node.target
         if (
             self.has_parser_tables and isinstance(target, ast.Name)
-            and target.id in FUNCTION_TABLES and target.id != STATEMENT_TABLE
+            and target.id in FUNCTION_TABLES and target.id not in TOKEN_MATCH_TABLE_SITES
         ):
             return
         self.generic_visit(node)
@@ -413,14 +413,14 @@ class Impact:
                 builders = profile
             elif profile:
                 builders = dict.fromkeys(profile, False)
-        uses_statement_table = STATEMENT_TABLE in self.covered_function_tables and STATEMENT_TABLE in source
-        if uses_statement_table and self.token_members is None:
+        uses_token_table = any(field in source for field in TOKEN_MATCH_TABLE_SITES.keys() & self.covered_function_tables)
+        if uses_token_table and self.token_members is None:
             registry = self.baseline / TOKEN_MEMBERS_SOURCE
             profile = None
             if self.baseline_syntax is not None and registry.is_file():
                 profile = self.cached_profile("token-members", TOKEN_MEMBERS_SOURCE, registry.read_bytes().decode("utf-8"))
             self.token_members = frozenset(profile or ())
-        token_members = self.token_members if uses_statement_table else ()
+        token_members = self.token_members if uses_token_table else ()
         changes = changed_function_keys(path, source, updated, builders, token_members)
         if not changes:
             return None

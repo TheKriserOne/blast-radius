@@ -2,7 +2,7 @@
 
 import ast
 
-from factory_probe import FUNCTION_TABLES, MATCHED_TABLE_SITES, STATEMENT_TABLE
+from factory_probe import FUNCTION_TABLES, MATCHED_TABLE_SITES, TOKEN_MATCH_TABLE_SITES
 
 
 FUNCTION_BUILDERS_SOURCE = "sqlglot/expressions/__init__.py"
@@ -80,23 +80,23 @@ def function_table_structure(module, module_name, builders, token_members=()):
                     pass
                 case _:
                     continue
-            statement_table = field == STATEMENT_TABLE
-            if statement_table and not token_members:
+            token_table = field in TOKEN_MATCH_TABLE_SITES
+            if token_table and not token_members:
                 continue
             owner = field, f"{module_name}.{cls.name}"
             if owner in tables:
                 return None, {}
             # These handlers receive the parser as their positional argument.
-            entry_builders = {} if statement_table or field in MATCHED_TABLE_SITES else builders
+            entry_builders = {} if token_table or field in MATCHED_TABLE_SITES else builders
             fixed, pure, seen = [], {}, set()
             keys, expressions = [], []
             for key, value in zip(table.keys, table.values):
                 match key:
                     case ast.Attribute(value=ast.Name(id="TokenType"), attr=name) if (
-                        statement_table and name in token_members
+                        token_table and name in token_members
                     ):
                         pass
-                    case ast.Constant(value=name) if not statement_table and type(name) is str:
+                    case ast.Constant(value=name) if not token_table and type(name) is str:
                         pass
                     case _:
                         name = None
@@ -113,7 +113,7 @@ def function_table_structure(module, module_name, builders, token_members=()):
                         pure[name] = ast.dump(value), len(keys), isinstance(value, ast.Lambda), index_shape
                         continue
                     fixed.append(name)
-                    if statement_table:
+                    if token_table:
                         key.attr = ""
                     else:
                         key.value = ""

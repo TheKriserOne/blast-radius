@@ -8,7 +8,7 @@ from importlib.machinery import PathFinder
 from pathlib import Path
 from types import BuiltinMethodType, MethodType
 
-from factory_probe import ALTER_TABLE, FUNCTION_TABLES, MATCHED_TABLE_SITES, STATEMENT_TABLE, attach_factory_calls
+from factory_probe import ALTER_TABLE, FUNCTION_TABLES, MATCHED_TABLE_SITES, TOKEN_MATCH_TABLE_SITES, attach_factory_calls
 from guard_comparisons import GuardComparisons, supports_guard_profile
 from identity_comparisons import IdentityProbe, IdentityReads, supports_identity_profile
 from literal_statements import LiteralStatements, supports_literal_profile
@@ -101,7 +101,7 @@ class DialectReads(ast.NodeTransformer):
             field = node.args[0].attr
             if (
                 (getter.attr == "_match_texts" and field in MATCHED_TABLE_SITES)
-                or (getter.attr == "_match_set" and field == STATEMENT_TABLE)
+                or (getter.attr == "_match_set" and field in TOKEN_MATCH_TABLE_SITES)
             ):
                 return self.function_table_read(node, field, "_blast_radius_table_match", [getter, *node.args])
         if (
@@ -187,7 +187,7 @@ class DialectProbe:
         self.escape_owners = {}
         self.type_maps = MappingLookups("@type-map", "sqlglot.generator", "Generator", "TYPE_MAPPING")
         self.original_table_matches = {}
-        self.statement_token_type = None
+        self.token_type = None
         self.function_tables = {
             field: MappingLookups(tag, "sqlglot.parser", "Parser", field)
             for field, (tag, _) in FUNCTION_TABLES.items()
@@ -256,7 +256,7 @@ class DialectProbe:
     def record_function_key(self, field, table, key):
         scope = self.scope()
         lookups = self.function_tables[field]
-        key_type = self.statement_token_type if field == STATEMENT_TABLE else str
+        key_type = self.token_type if field in TOKEN_MATCH_TABLE_SITES else str
         if type(table) is dict and type(key) is key_type:
             scope.update(lookups.dependencies(table, key) or ((f"{lookups.tag}-unknown:{key}", 0),))
         else:
@@ -279,7 +279,7 @@ class DialectProbe:
         if type(match) is MethodType and match.__func__ is self.original_table_matches.get(field):
             parser = match.__self__
             token = parser._curr
-            if field == STATEMENT_TABLE:
+            if field in TOKEN_MATCH_TABLE_SITES:
                 self.record_function_key(field, table, token.token_type)
             elif token.token_type not in parser.TEXT_MATCH_EXCLUDED_TOKENS:
                 self.record_function_key(field, table, token.text.upper())
@@ -321,9 +321,9 @@ class DialectProbe:
         if name in TYPE_MAPPING_SITES and reads.type_mapping_lookups != TYPE_MAPPING_SITES[name]:
             raise RuntimeError("Expected all TYPE_MAPPING lookup sites in the pinned source")
         function_sites = {field: tag for field, (tag, modules) in FUNCTION_TABLES.items() if name in modules}
-        # ALTER SESSION adds a direct lookup, and DESCRIBE also checks the statement table.
+        # ALTER SESSION adds a direct lookup to the two text matches.
         expected_function_sites = {
-            field: MATCHED_TABLE_SITES.get(field, 1) + (field in {ALTER_TABLE, STATEMENT_TABLE})
+            field: MATCHED_TABLE_SITES.get(field, TOKEN_MATCH_TABLE_SITES.get(field, 1)) + (field == ALTER_TABLE)
             for field in function_sites
         }
         if reads.function_table_lookups != expected_function_sites:
@@ -364,8 +364,8 @@ class DialectProbe:
             exec(code, module.__dict__)
             if name == "sqlglot.parser":
                 self.original_table_matches = dict.fromkeys(MATCHED_TABLE_SITES, module.Parser._match_texts)
-                self.original_table_matches[STATEMENT_TABLE] = module.Parser._match_set
-                self.statement_token_type = module.TokenType
+                self.original_table_matches.update(dict.fromkeys(TOKEN_MATCH_TABLE_SITES, module.Parser._match_set))
+                self.token_type = module.TokenType
             attach_factory_calls(module)
 
         spec.loader.exec_module = execute
