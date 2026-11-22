@@ -10,6 +10,8 @@ from build_syntax import build_syntax
 from dialect_fields import TYPE_MEMBERS_SOURCE
 from expression_arguments import possible_argument_classes
 from expression_probe import missing_optional_arguments
+from factory_changes import FUNCTION_BUILDERS_SOURCE
+from factory_probe import FUNCTION_TABLE_SITES
 from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filtered_dependency, pair_dependency
 from identity_comparisons import pure_equivalent
@@ -23,6 +25,7 @@ class ImpactTest(unittest.TestCase):
         path="sqlglot/parsers/example.py", expression_validators=None, dialect_reads=None,
         identity_reads=None, factory_calls=None, guard_reads=None, literal_reads=None, fixture_reads=None,
         cached_source=None, ordered_reads=None, argument_presence=False, extra_changes=(), type_members=(),
+        function_builders=(),
     ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
@@ -77,11 +80,15 @@ class ImpactTest(unittest.TestCase):
                 dtype_source = root / TYPE_MEMBERS_SOURCE
                 dtype_source.parent.mkdir(parents=True, exist_ok=True)
                 dtype_source.write_text("# test type member registry\n", encoding="utf-8")
-            if cached_source is not None or type_members:
+            if function_builders:
+                builder_source = root / FUNCTION_BUILDERS_SOURCE
+                builder_source.parent.mkdir(parents=True, exist_ok=True)
+                builder_source.write_text("# test function builder registry\n", encoding="utf-8")
+            if cached_source is not None or type_members or function_builders:
                 source = root / path
                 if cached_source is not None:
                     source.write_text(cached_source, encoding="utf-8")
-                build_syntax(root, type_members)
+                build_syntax(root, type_members, function_builders)
                 source.write_text(before, encoding="utf-8")
             coverage_file = root / "coverage.json.gz"
             coverage_file.write_bytes(gzip.compress(json.dumps(coverage).encode("utf-8")))
@@ -474,6 +481,64 @@ class ImpactTest(unittest.TestCase):
         self.assertEqual(self.select(before, moved, **options), {4})
         added = before.replace("**Base.TYPE_MAPPING,", "**Base.TYPE_MAPPING, exp.DType.TIMETZ: 'TIME',")
         self.assertEqual(self.select(before, added, type_members=members, **options), set())
+
+    def test_function_keys_keep_eager_bindings_and_trace_the_renamed_keys(self):
+        path = "sqlglot/parsers/example.py"
+        before = "class Example:\n    FUNCTIONS = {**Base.FUNCTIONS, 'OLD': make_handler(), 'KEEP': lambda x: x}\n"
+        owner = "sqlglot.parsers.example.Example"
+        old_lookup = (f"@parser-functions:{owner}:OLD", 0)
+        new_lookup = (f"@parser-functions:{owner}:NEW", 0)
+        sites = [(f"@parser-functions-sites:{module}", 0) for module in sorted(FUNCTION_TABLE_SITES)]
+        reads = {"dependent": [(f"@parser-functions-owner:{owner}", 0), old_lookup], "unrelated": [new_lookup]}
+        after = before.replace("'OLD'", "'NEW'")
+        self.assertIsNone(self.select(before, after, path=path, collection=sites[:1], dialect_reads=reads))
+        self.assertEqual(self.select(before, after, path=path, collection=sites, dialect_reads=reads), {4, 8})
+        self.assertIsNone(self.select(before, after, path=path, collection=[*sites, new_lookup], dialect_reads=reads))
+        removed = before.replace("'OLD': make_handler(), ", "")
+        self.assertIsNone(self.select(before, removed, path=path, collection=sites, dialect_reads=reads))
+
+    def test_function_keys_accept_pure_lambda_and_certified_constructor_changes(self):
+        path = "sqlglot/parsers/example.py"
+        before = "from sqlglot import exp\nclass Example:\n    FUNCTIONS = {'KEEP': lambda args: args[0]}\n"
+        owner = "sqlglot.parsers.example.Example"
+        sites = [(f"@parser-functions-sites:{module}", 0) for module in sorted(FUNCTION_TABLE_SITES)]
+        reads = {
+            "dependent": [(f"@parser-functions-owner:{owner}", 0), (f"@parser-functions:{owner}:KEEP", 0)],
+            "unrelated": [(f"@parser-functions:{owner}:NEW", 0)],
+        }
+        options = {"path": path, "collection": sites, "dialect_reads": reads}
+        self.assertEqual(self.select(before, before.replace("'KEEP': lambda args: args[0]", ""), **options), {4})
+        added = before.replace("{", "{'NEW': exp.CurrentTime.from_arg_list, ")
+        self.assertIsNone(self.select(before, added, **options))
+        self.assertEqual(self.select(before, added, function_builders=("CurrentTime",), **options), {8})
+        self.assertIsNone(self.select(before, added.replace("CurrentTime", "Missing"), function_builders=("CurrentTime",), **options))
+        reads["dependent"].append(("@parser-functions-unknown:OTHER", 0))
+        self.assertEqual(self.select(before, added, function_builders=("CurrentTime",), **options), {4, 8})
+
+    def test_function_key_edits_keep_only_changed_compiled_code_readers(self):
+        path = "sqlglot/parsers/example.py"
+        before = (
+            "def unrelated():\n"
+            "    return True\n"
+            "class Example:\n"
+            "    FUNCTIONS = {'OLD': make_handler()}\n"
+            "    def get(self):\n"
+            "        return 1\n"
+        )
+        owner = "sqlglot.parsers.example.Example"
+        unchanged_reader = (f"@identity-code:{path}:1", 0)
+        later_reader = (f"@identity-code:{path}:5", 0)
+        sites = [(f"@parser-functions-sites:{module}", 0) for module in sorted(FUNCTION_TABLE_SITES)]
+        reads = {"dependent": [(f"@parser-functions-owner:{owner}", 0)],
+                 "unrelated": [(f"@parser-functions:{owner}:OLD", 0)]}
+        rename = before.replace("'OLD'", "'NEW'")
+        self.assertEqual(
+            self.select(before, rename, path=path, collection=[*sites, unchanged_reader, later_reader], dialect_reads=reads),
+            {8},
+        )
+        shifted = before.replace("    def get", "\n    def get")
+        shifted = shifted.replace("make_handler()}", "make_handler(), 'NEW': lambda args: args[0]}")
+        self.assertIsNone(self.select(before, shifted, path=path, collection=[*sites, later_reader], dialect_reads=reads))
 
     def test_identity_rewrite_keeps_uncertified_tests_and_code_readers(self):
         path = "sqlglot/executor/example.py"

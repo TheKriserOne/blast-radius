@@ -3,10 +3,13 @@
 import marshal
 import sys
 from hashlib import sha256
+from inspect import getattr_static
 from pathlib import Path
+from types import FunctionType
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from dialect_fields import TYPE_MEMBERS_SOURCE
+from factory_changes import FUNCTION_BUILDERS_SOURCE
 from guard_comparisons import guard_structure, supports_guard_profile
 from identity_comparisons import identity_structure, supports_identity_profile
 from impact import FunctionBodies
@@ -23,12 +26,16 @@ MATCHERS = (
 )
 
 
-def build_syntax(baseline, type_members=()):
+def build_syntax(baseline, type_members=(), function_builders=()):
     with ZipFile(baseline / "syntax.zip", "w") as archive:
-        if type_members:
-            raw = (baseline / TYPE_MEMBERS_SOURCE).read_bytes()
-            data = marshal.dumps((sha256(raw).digest(), type_members))
-            archive.writestr(ZipInfo(f"{PROFILE_DIRECTORY}/type-members/{TYPE_MEMBERS_SOURCE}"), data)
+        for kind, relative, members in (
+            ("type-members", TYPE_MEMBERS_SOURCE, type_members),
+            ("function-builders", FUNCTION_BUILDERS_SOURCE, function_builders),
+        ):
+            if members:
+                raw = (baseline / relative).read_bytes()
+                data = marshal.dumps((sha256(raw).digest(), members))
+                archive.writestr(ZipInfo(f"{PROFILE_DIRECTORY}/{kind}/{relative}"), data)
         for path in sorted((baseline / "sqlglot").rglob("*.py")):
             relative = path.relative_to(baseline).as_posix()
             raw = path.read_bytes()
@@ -56,7 +63,13 @@ def build_syntax(baseline, type_members=()):
 if __name__ == "__main__":
     baseline = Path(sys.argv[1]).resolve()
     sys.path.insert(0, str(baseline))
-    from sqlglot.expressions import DType
+    from sqlglot import exp
 
-    members = tuple(sorted(name for name, member in DType.__members__.items() if name == member.name))
-    build_syntax(baseline, members)
+    members = tuple(sorted(name for name, member in exp.DType.__members__.items() if name == member.name))
+    builders = tuple(sorted(
+        name for name, cls in vars(exp).items()
+        if type(cls) is type and issubclass(cls, exp.Func)
+        and type(builder := getattr_static(cls, "from_arg_list", None)) is classmethod
+        and type(builder.__func__) is FunctionType
+    ))
+    build_syntax(baseline, members, builders)

@@ -12,14 +12,14 @@ from zipfile import BadZipFile, ZipFile
 
 from dialect_fields import TYPE_MEMBERS_SOURCE, changed_dialect_fields, changed_type_mappings
 from expression_arguments import changed_expression_validators
-from factory_changes import factory_argument_structure
-from factory_probe import changed_show_entries, opaque as factory_opaque, tag as factory_tag
+from factory_changes import FUNCTION_BUILDERS_SOURCE, changed_function_keys, factory_argument_structure
+from factory_probe import FUNCTION_TABLE_SITES, changed_show_entries, opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filter_comments, filtered_dependency, fixture_pairs, pair_dependency
 from guard_comparisons import changed_guards, supports_guard_profile
 from identity_comparisons import changed_identity_sites, supports_identity_profile
 from literal_statements import changed_local_literals, supports_literal_profile
 from ordered_comparisons import changed_ordered_sites, threshold_changes_result
-from syntax_profile import PROFILE_DIRECTORY
+from syntax_profile import PROFILE_DIRECTORY, code_at_lines
 
 FILE_HEADER = re.compile(
     r"a/([\w./-]+) b/\1\n(?:index [^\n]*\n)?--- a/\1\n\+\+\+ b/\1\n(?=@@ )",
@@ -226,6 +226,12 @@ class Impact:
             ("@type-map-sites:sqlglot.generator", 0),
             ("@type-map-sites:sqlglot.expressions.builders", 0),
         } <= all_dependencies
+        self.has_function_table_reads = {
+            (f"@parser-functions-sites:{module}", 0) for module in FUNCTION_TABLE_SITES
+        } <= all_dependencies
+        self.unknown_function_reads = {
+            dep for dep in all_dependencies if dep[0].startswith("@parser-functions-unknown:")
+        }
         self.identity_sites = {
             path.removeprefix("@identity-site:") for path, _ in all_dependencies
             if path.startswith("@identity-site:")
@@ -365,6 +371,35 @@ class Impact:
             | {(f"@identity-code:{path}:{line}", 0) for line in code_lines}
             | {(f"@identity-unsafe:{site}", 0) for site in sites}
         )
+
+    def function_table_dependencies(self, path, source, updated):
+        if not self.has_dialect_fields or not self.has_function_table_reads or not (
+            path == "sqlglot/parser.py" or path.startswith("sqlglot/parsers/")
+        ):
+            return None
+        builders = ()
+        registry = self.baseline / FUNCTION_BUILDERS_SOURCE
+        if self.baseline_syntax is not None and registry.is_file():
+            builders = self.cached_profile("function-builders", FUNCTION_BUILDERS_SOURCE, registry.read_text("utf-8")) or ()
+        changes = changed_function_keys(path, source, updated, builders)
+        if not changes:
+            return None
+        dependencies = (
+            {(path, 0), ("@parser-functions-unknown", 0)}
+            | self.unknown_function_reads
+        )
+        for owner, keys in changes.items():
+            marker = (f"@parser-functions-owner:{owner}", 0)
+            if marker not in self.dependents and marker not in self.collection:
+                return None
+            dependencies.update((f"@parser-functions:{owner}:{key}", 0) for key in keys)
+        if path in self.code_reads:
+            reads = {tag: int(tag[0].rsplit(":", 1)[1]) for tag in self.code_reads[path]}
+            lines = set(reads.values())
+            before = code_at_lines(path, source, lines)
+            after = code_at_lines(path, updated, lines)
+            dependencies.update(tag for tag, line in reads.items() if line not in before or before[line] != after.get(line))
+        return dependencies
 
     def guard_dependencies(self, path, source, updated):
         if not self.has_guard_coverage or not supports_guard_profile(path.removesuffix(".py").replace("/", ".")):
@@ -522,6 +557,8 @@ class Impact:
                             profiled_deps = self.literal_dependencies(path, source, updated)
                         if profiled_deps is None and not same_structure:
                             profiled_deps = self.type_mapping_dependencies(path, source, updated)
+                        if profiled_deps is None and not same_structure:
+                            profiled_deps = self.function_table_dependencies(path, source, updated)
                         if profiled_deps is not None:
                             if profiled_deps & self.collection:
                                 return None

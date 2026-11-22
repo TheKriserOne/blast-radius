@@ -10,6 +10,13 @@ from types import FunctionType
 
 
 FACTORY_MAP = "BLAST_RADIUS_FACTORY_MAP"
+FUNCTION_TABLE_SITES = {
+    "sqlglot.anonymize",
+    "sqlglot.expressions.builders",
+    "sqlglot.generators.snowflake",
+    "sqlglot.parser",
+    "sqlglot.parsers.prql",
+}
 SHOW_TABLE = "SHOW_PARSERS"
 _probe = None
 

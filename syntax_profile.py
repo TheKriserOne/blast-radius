@@ -1,7 +1,10 @@
 """Compare patched syntax with precomputed baseline normalizations."""
 
 import ast
+import marshal
 import sys
+from collections import defaultdict
+from types import CodeType
 
 
 PROFILE_DIRECTORY = f"matchers-v1-{sys.implementation.cache_tag}"
@@ -29,3 +32,15 @@ def match_profile(path, source, updated, normalize, baseline):
 def enclosing_code_lines(scopes, sites):
     lines = {int(site.rsplit(":", 2)[1]) for site in sites}
     return {1} | {start for start, end in scopes if any(start <= line <= end for line in lines)}
+
+
+def code_at_lines(path, source, lines):
+    by_line = defaultdict(list)
+    module = compile(source.encode("utf-8"), path, "exec", dont_inherit=True)
+    pending = [value for value in module.co_consts if isinstance(value, CodeType)]
+    while pending:
+        code = pending.pop()
+        if code.co_firstlineno in lines:
+            by_line[code.co_firstlineno].append(marshal.dumps(code))
+        pending.extend(value for value in code.co_consts if isinstance(value, CodeType))
+    return by_line

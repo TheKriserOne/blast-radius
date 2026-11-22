@@ -1,4 +1,4 @@
-"""Record dialect, tokenizer, and generator mapping reads on the pinned checkout."""
+"""Record dialect, tokenizer, generator, and parser mapping reads on the pinned checkout."""
 
 import ast
 import sys
@@ -7,7 +7,7 @@ from importlib.machinery import PathFinder
 from pathlib import Path
 from types import BuiltinMethodType
 
-from factory_probe import attach_factory_calls
+from factory_probe import FUNCTION_TABLE_SITES, attach_factory_calls
 from guard_comparisons import GuardComparisons, supports_guard_profile
 from identity_comparisons import IdentityProbe, IdentityReads, supports_identity_profile
 from literal_statements import LiteralStatements, supports_literal_profile
@@ -15,6 +15,7 @@ from ordered_comparisons import OrderedComparisons, observe_order, supports_orde
 
 
 MODULES = {
+    "sqlglot.anonymize",
     "sqlglot.dialects.dialect",
     "sqlglot.expressions.builders",
     "sqlglot.generator",
@@ -38,11 +39,43 @@ def mapping_classes(base, field, mapping):
             yield cls
 
 
+class MappingLookups:
+    def __init__(self, tag, module, base, field):
+        self.tag = tag
+        self.module = module
+        self.base = base
+        self.field = field
+        self.owners = {}
+        self.lookups = {}
+
+    def dependencies(self, mapping, key):
+        identity = id(mapping)
+        lookup = identity, key
+        if lookup not in self.lookups:
+            if identity not in self.owners:
+                base = getattr(sys.modules.get(self.module), self.base, None)
+                # Pinned table copies take their entries from classes in the resulting owner's MRO.
+                owners = {
+                    f"{parent.__module__}.{parent.__qualname__}"
+                    for cls in mapping_classes(base, self.field, mapping)
+                    for parent in cls.__mro__ if parent.__module__.startswith("sqlglot.")
+                }
+                self.owners[identity] = mapping, owners
+            _, owners = self.owners[identity]
+            name = key if type(key) is str else key.name
+            self.lookups[lookup] = (
+                {(f"{self.tag}:{owner}:{name}", 0) for owner in owners}
+                | {(f"{self.tag}-owner:{owner}", 0) for owner in owners}
+            )
+        return self.lookups[lookup]
+
+
 class DialectReads(ast.NodeTransformer):
     def __init__(self, module):
         self.module = module
         self.numeric_lookups = 0
         self.type_mapping_lookups = 0
+        self.function_table_lookups = 0
 
     def visit_Attribute(self, node):
         self.generic_visit(node)
@@ -77,7 +110,9 @@ class DialectReads(ast.NodeTransformer):
                 ),
                 node,
             )
-        if isinstance(getter, ast.Attribute) and getter.attr == "get" and len(node.args) == 2 and not node.keywords:
+        if not isinstance(getter, ast.Attribute) or getter.attr != "get" or node.keywords:
+            return node
+        if len(node.args) == 2:
             table = getter.value
             if (
                 (self.module == "sqlglot.generator" and isinstance(table, ast.Attribute) and table.attr == "TYPE_MAPPING")
@@ -89,7 +124,40 @@ class DialectReads(ast.NodeTransformer):
                     args=[getter, *node.args],
                     keywords=[],
                 ), node)
+        if len(node.args) == 1:
+            table = getter.value
+            if (
+                (self.module == "sqlglot.parser" and isinstance(table, ast.Name) and table.id == "functions")
+                or (self.module in {"sqlglot.expressions.builders", "sqlglot.parsers.prql"}
+                    and isinstance(table, ast.Attribute) and table.attr == "FUNCTIONS")
+            ):
+                return self.function_table_read(node, "_blast_radius_function_get", [getter, *node.args])
         return node
+
+    def visit_Compare(self, node):
+        self.generic_visit(node)
+        if self.module == "sqlglot.anonymize" and len(node.ops) == 1 and isinstance(node.ops[0], ast.In):
+            table = node.comparators[0]
+            if isinstance(table, ast.Attribute) and table.attr == "FUNCTIONS":
+                return self.function_table_read(node, "_blast_radius_function_contains", [node.left, table])
+        return node
+
+    def visit_Subscript(self, node):
+        self.generic_visit(node)
+        table = node.value
+        if (
+            self.module == "sqlglot.generators.snowflake" and isinstance(node.ctx, ast.Load)
+            and isinstance(table, ast.Attribute) and table.attr == "FUNCTIONS"
+            and isinstance(node.slice, ast.Constant)
+        ):
+            return self.function_table_read(node, "_blast_radius_function_item", [table, node.slice])
+        return node
+
+    def function_table_read(self, node, helper, arguments):
+        self.function_table_lookups += 1
+        return ast.copy_location(ast.Call(
+            func=ast.Name(id=helper, ctx=ast.Load()), args=arguments, keywords=[],
+        ), node)
 
 
 class DialectProbe:
@@ -99,8 +167,8 @@ class DialectProbe:
         self.identity = IdentityProbe(baseline, scope)
         self.week_tags = {}
         self.escape_owners = {}
-        self.type_map_owners = {}
-        self.type_map_lookups = {}
+        self.type_maps = MappingLookups("@type-map", "sqlglot.generator", "Generator", "TYPE_MAPPING")
+        self.function_tables = MappingLookups("@parser-functions", "sqlglot.parser", "Parser", "FUNCTIONS")
         if any(
             module in MODULES
             or supports_identity_profile(module)
@@ -159,27 +227,28 @@ class DialectProbe:
         if type(getter) is not BuiltinMethodType or type(getter.__self__) is not dict or type(key) is not dtype:
             scope.add(("@type-map-unknown", 0))
             return result
-        mapping = getter.__self__
-        identity = id(mapping)
-        lookup = identity, key
-        if lookup not in self.type_map_lookups:
-            if identity not in self.type_map_owners:
-                generator = getattr(sys.modules.get("sqlglot.generator"), "Generator", None)
-                # Pinned table copies take their entries from classes in the resulting owner's MRO.
-                owners = {
-                    f"{base.__module__}.{base.__qualname__}"
-                    for cls in mapping_classes(generator, "TYPE_MAPPING", mapping)
-                    for base in cls.__mro__ if base.__module__.startswith("sqlglot.")
-                }
-                self.type_map_owners[identity] = mapping, owners
-            _, owners = self.type_map_owners[identity]
-            self.type_map_lookups[lookup] = (
-                {(f"@type-map:{owner}:{key.name}", 0) for owner in owners}
-                | {(f"@type-map-owner:{owner}", 0) for owner in owners}
-                if owners else {("@type-map-unknown", 0)}
-            )
-        scope.update(self.type_map_lookups[lookup])
+        scope.update(self.type_maps.dependencies(getter.__self__, key) or (("@type-map-unknown", 0),))
         return result
+
+    def record_function_key(self, table, key):
+        scope = self.scope()
+        if type(table) is dict and type(key) is str:
+            scope.update(self.function_tables.dependencies(table, key) or ((f"@parser-functions-unknown:{key}", 0),))
+        else:
+            scope.add(("@parser-functions-unknown", 0))
+
+    def function_get(self, getter, key):
+        table = getter.__self__ if type(getter) is BuiltinMethodType else None
+        self.record_function_key(table, key)
+        return getter(key)
+
+    def function_contains(self, key, table):
+        self.record_function_key(table, key)
+        return key in table
+
+    def function_item(self, table, key):
+        self.record_function_key(table, key)
+        return table[key]
 
     def guard(self, site):
         self.scope().add((f"@guard-read:{site}", 0))
@@ -214,6 +283,8 @@ class DialectProbe:
             raise RuntimeError("Expected both numeric escape readers in the pinned tokenizer")
         if name in TYPE_MAPPING_SITES and reads.type_mapping_lookups != TYPE_MAPPING_SITES[name]:
             raise RuntimeError("Expected all TYPE_MAPPING lookup sites in the pinned source")
+        if name in FUNCTION_TABLE_SITES and reads.function_table_lookups != 1:
+            raise RuntimeError("Expected the FUNCTIONS lookup in the pinned source module")
         relative_path = expected.relative_to(self.baseline).as_posix()
         comparisons = IdentityReads(relative_path)
         if identity_profile:
@@ -233,6 +304,9 @@ class DialectProbe:
             module.__dict__["_blast_radius_week_offset"] = self.week_offset
             module.__dict__["_blast_radius_numeric_escape"] = self.numeric_escape
             module.__dict__["_blast_radius_type_mapping"] = self.type_mapping
+            module.__dict__["_blast_radius_function_get"] = self.function_get
+            module.__dict__["_blast_radius_function_contains"] = self.function_contains
+            module.__dict__["_blast_radius_function_item"] = self.function_item
             module.__dict__["_blast_radius_identity"] = self.identity.compare
             module.__dict__["_blast_radius_guard"] = self.guard
             module.__dict__["_blast_radius_literal"] = self.literal_assignment
@@ -242,6 +316,8 @@ class DialectProbe:
                 self.scope().add(("@numeric-missing-keys", 0))
             if name in TYPE_MAPPING_SITES:
                 self.scope().add((f"@type-map-sites:{name}", 0))
+            if name in FUNCTION_TABLE_SITES:
+                self.scope().add((f"@parser-functions-sites:{name}", 0))
             exec(code, module.__dict__)
             attach_factory_calls(module)
 
