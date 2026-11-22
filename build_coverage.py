@@ -17,10 +17,12 @@ from expression_arguments import possible_argument_classes
 from expression_probe import observe_expression_validation
 from factory_probe import observe_factory_calls
 from fixture_reads import fixture_dependency
+from source_reads import explicit_source_read, platform_processor_probe
 
 _PROCESS_COVERAGE = None
 RAW_RECEIPT = "BLAST_RADIUS_RAW_RECEIPT"
 RAW_BASELINE = "BLAST_RADIUS_RAW_BASELINE"
+UNTRACED = ("*", 0)
 
 
 def run_traced_task(nodeid, payload):
@@ -48,6 +50,7 @@ class Coverage:
         self.output = Path(os.environ["BLAST_RADIUS_COVERAGE_DIR"])
         self.active = True
         self.raw_children = {}
+        self.source_collection_complete = True
         self.factory_probe = observe_factory_calls(self.root, lambda: self.current)
         self.expression_validation = observe_expression_validation(self.root, lambda: self.current)
         self.monitoring = monitoring = sys.monitoring
@@ -72,8 +75,7 @@ class Coverage:
             if path.startswith(self.fixtures):
                 self.current.add(fixture_dependency(path[len(self.root):], sys._getframe(1).f_code, self.root))
             elif path.startswith(self.source) and path.endswith(".py"):
-                caller = sys._getframe(1).f_code.co_filename
-                if not caller.startswith("<frozen importlib"):
+                if explicit_source_read(path, sys._getframe(1)):
                     self.current.add((path[len(self.root):], 0))
         elif event in {"subprocess.Popen", "os.system", "os.fork", "os.forkpty", "os.posix_spawn"}:
             # Child processes can run code that Python's monitor cannot see.
@@ -81,7 +83,9 @@ class Coverage:
                 environment = args[-1] or {}
                 if environment.get(RAW_RECEIPT) in self.raw_children:
                     return
-            self.current.add(("*", 0))
+            self.current.add(UNTRACED)
+            if self.current is self.collection and not platform_processor_probe(event, args, sys._getframe(1)):
+                self.source_collection_complete = False
 
     def trace_subprocesses(self):
         initialize = subprocess.Popen.__init__
@@ -109,7 +113,9 @@ class Coverage:
                 return initialize(process, args, **options)
             except BaseException:
                 self.raw_children.pop(receipt)
-                self.current.add(("*", 0))
+                self.current.add(UNTRACED)
+                if self.current is self.collection:
+                    self.source_collection_complete = False
                 raise
 
         subprocess.Popen.__init__ = traced_initialize
@@ -123,12 +129,16 @@ class Coverage:
                     or trace["pid"] != process.pid
                     or not trace.get("expression_validation")
                     or not trace.get("argument_presence")
+                    or not trace.get("explicit_source_reads")
                     or (self.factory_probe is not None and not trace.get("factory_calls"))
                 ):
                     raise ValueError("incomplete child trace")
-                scope.update(map(tuple, trace["dependencies"]))
+                dependencies = set(map(tuple, trace["dependencies"]))
             except (OSError, ValueError, KeyError, TypeError):
-                scope.add(("*", 0))
+                dependencies = {UNTRACED}
+            scope.update(dependencies)
+            if scope is self.collection and UNTRACED in dependencies:
+                self.source_collection_complete = False
 
     def trace_process_pools(self):
         submit = ProcessPoolExecutor.submit
@@ -194,6 +204,7 @@ class Coverage:
             "guard_coverage": self.expression_validation,
             "literal_coverage": self.expression_validation,
             "factory_calls": self.factory_probe is not None,
+            "explicit_source_reads": self.source_collection_complete,
             "collection": sorted(self.collection),
             "tests": {
                 nodeid: sorted(dependencies | self.shared[nodeid.split("::", 1)[0]])
@@ -239,6 +250,7 @@ def pack_coverage(directory, output):
     guard_coverage = True
     literal_coverage = True
     factory_calls = True
+    explicit_source_reads = True
     for path in directory.glob("*.json"):
         shard = json.loads(path.read_text())
         expression_validation &= shard.get("expression_validation") is True
@@ -248,6 +260,7 @@ def pack_coverage(directory, output):
         guard_coverage &= shard.get("guard_coverage") is True
         literal_coverage &= shard.get("literal_coverage") is True
         factory_calls &= shard.get("factory_calls") is True
+        explicit_source_reads &= shard.get("explicit_source_reads") is True
         collection.update(map(tuple, shard["collection"]))
         for nodeid, dependencies in shard["tests"].items():
             if path.name.startswith("child-"):
@@ -285,6 +298,7 @@ def pack_coverage(directory, output):
         "guard_coverage": bool(tests) and guard_coverage,
         "literal_coverage": bool(tests) and literal_coverage,
         "factory_calls": bool(tests) and factory_calls,
+        "explicit_source_reads": bool(tests) and explicit_source_reads,
         "dependencies": dependency_table,
         "collection": sorted(dependency_numbers[dependency] for dependency in collection),
         "aliases": list(aliases.items()),

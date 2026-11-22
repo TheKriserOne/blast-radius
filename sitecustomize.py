@@ -7,10 +7,10 @@ def start_trace(receipt, baseline):
     import atexit
     import sys
 
-    from dialect_probe import PROBE_SOURCE_READ
     from expression_probe import observe_expression_validation
     from factory_probe import observe_factory_calls
     from fixture_reads import fixture_dependency
+    from source_reads import explicit_source_read
 
     dependencies = set()
     expression_validation = observe_expression_validation(baseline, lambda: dependencies)
@@ -37,7 +37,9 @@ def start_trace(receipt, baseline):
             path = os.path.abspath(os.fsdecode(args[0]))
             if path.startswith(baseline + "tests/fixtures/"):
                 dependencies.add(fixture_dependency(path[len(baseline):], sys._getframe(1).f_code, baseline))
-            elif path != PROBE_SOURCE_READ.get() and path.startswith(baseline + "sqlglot/"):
+            elif path.startswith(baseline + "sqlglot/") and (
+                not path.endswith(".py") or explicit_source_read(path, sys._getframe(1))
+            ):
                 dependencies.add((path[len(baseline):], 0))
         elif event in {"subprocess.Popen", "os.system", "os.fork", "os.forkpty", "os.posix_spawn"}:
             dependencies.add(("*", 0))
@@ -54,6 +56,7 @@ def start_trace(receipt, baseline):
                 "expression_validation": expression_validation,
                 "argument_presence": expression_validation,
                 "factory_calls": factory_probe is not None,
+                "explicit_source_reads": True,
                 "dependencies": sorted(dependencies),
             }, stream)
 

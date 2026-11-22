@@ -14,7 +14,7 @@ COPY requirements.lock /tmp/requirements.lock
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.lock
 
 FROM test-env AS coverage
-COPY build_coverage.py dialect_probe.py expression_arguments.py expression_probe.py factory_probe.py fixture_reads.py guard_comparisons.py identity_comparisons.py literal_statements.py ordered_comparisons.py syntax_profile.py import_map.json.gz sitecustomize.py /app/
+COPY build_coverage.py dialect_probe.py expression_arguments.py expression_probe.py factory_probe.py fixture_reads.py guard_comparisons.py identity_comparisons.py literal_statements.py ordered_comparisons.py syntax_profile.py import_map.json.gz sitecustomize.py source_reads.py /app/
 RUN mkdir /coverage \
     && SKIP_INTEGRATION=0 PYTHONPATH=/app BLAST_RADIUS_COVERAGE_DIR=/coverage \
         BLAST_RADIUS_FACTORY_MAP=/app/import_map.json.gz \

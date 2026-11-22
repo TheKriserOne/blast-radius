@@ -3,11 +3,24 @@
 import ast
 import marshal
 import sys
+import warnings
 from collections import defaultdict
 from types import CodeType
 
 
 PROFILE_DIRECTORY = f"matchers-v1-{sys.implementation.cache_tag}"
+
+
+def equivalent_module(path, source, updated):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        before = ast.parse(source, path, type_comments=True)
+        after = ast.parse(updated, path, type_comments=True)
+        if ast.dump(before, include_attributes=True) != ast.dump(after, include_attributes=True):
+            return False
+        before_code = compile(source, path, "exec", dont_inherit=True)
+        after_code = compile(updated, path, "exec", dont_inherit=True)
+        return marshal.dumps(before_code) == marshal.dumps(after_code)
 
 
 def baseline_profile(path, source, normalize):

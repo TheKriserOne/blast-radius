@@ -56,7 +56,7 @@ For an isolated `and`/`or` or `==`/`!=` change, or an added or removed leading `
 
 For a strict-to-inclusive comparison edit or its reverse, the selector checks where the operands were equal. When a literal integer or integer tuple threshold changes, it checks which observed operands would get a different result. It keeps function-level coverage when a test uses an unverified operand.
 
-The selector compares the standard SQL fixture loaders' input, expected output, and ordered metadata. It can also apply single-source selection to a mixed patch when every other edit is an equivalent fixture with no raw readers.
+The selector compares the standard SQL fixture loaders' input, expected output, and ordered metadata. It can apply single-source selection to a mixed patch when the other edits leave fixture loader output unchanged or leave `sqlglot/helper.py`'s compiled code and source positions unchanged. Each omitted file must have no recorded raw readers.
 
 `import_map.json.gz` records which tests use modules and which parser factories only create closures. The selector uses that map for same-type literal edits to those factory calls. For observed `SHOW_PARSERS` entries it can use exact calls recorded in the coverage map, with module-level selection when that trace is incomplete.
 

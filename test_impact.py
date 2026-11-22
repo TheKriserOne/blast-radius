@@ -27,7 +27,7 @@ class ImpactTest(unittest.TestCase):
         path="sqlglot/parsers/example.py", expression_validators=None, dialect_reads=None,
         identity_reads=None, factory_calls=None, guard_reads=None, literal_reads=None, fixture_reads=None,
         cached_source=None, ordered_reads=None, argument_presence=False, extra_changes=(), type_members=(),
-        function_builders=(),
+        function_builders=(), explicit_source_reads=False,
     ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
@@ -36,6 +36,7 @@ class ImpactTest(unittest.TestCase):
         coverage = {
             "collection": collection,
             "tests": {"dependent": [[path, 2]], "unrelated": []},
+            "explicit_source_reads": explicit_source_reads,
         }
         if expression_validators is not None:
             coverage["expression_validation"] = True
@@ -242,6 +243,36 @@ class ImpactTest(unittest.TestCase):
         self.assertEqual(self.select(before, after, fixture_reads={
             "dependent": [pair_dependency(fixture), (fixture, 0)],
         }, **parameters), {4})
+
+    def test_equivalent_source_allows_single_source_selection(self):
+        path = "sqlglot/parsers/example.py"
+        before = "def check(value):\n    if value:\n        return value\n"
+        after = before.replace("if value:", "if not value:")
+        helper = "sqlglot/helper.py"
+        source = "'''Café'''\nsetting = 1  # original\n"
+        parameters = {
+            "path": path,
+            "collection": [(f"@guard-site:{path}:2:7", 0)],
+            "guard_reads": {"unrelated": [(f"@guard-read:{path}:2:7", 0)]},
+        }
+
+        def select(updated, explicit_source_reads=True, **options):
+            return self.select(before, after, **(parameters | options),
+                               extra_changes=[(helper, source, updated)], explicit_source_reads=explicit_source_reads)
+
+        updated = source.replace("# original", "# revised")
+        self.assertEqual(select(updated), {8})
+        self.assertEqual(select(source + "# tail\n"), {8})
+        self.assertEqual(select(updated, explicit_source_reads=False), {4})
+        self.assertEqual(select(updated, fixture_reads={"dependent": [(helper, 0)]}), {4})
+        self.assertIsNone(select(updated, collection=[(helper, 0)]))
+        for changes_behavior in (
+            "# leading\n" + source,
+            "# coding: ascii\n" + source,
+            updated.replace("Café", "Tea"),
+            source.replace("# original", "# type: ignore[assignment]"),
+        ):
+            self.assertIn(select(changes_behavior), ({4}, None))
 
     def test_parser_table_factory_selects_module_consumers(self):
         path = "sqlglot/parsers/example.py"

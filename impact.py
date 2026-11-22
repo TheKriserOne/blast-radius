@@ -20,15 +20,18 @@ from identity_comparisons import changed_identity_sites, supports_identity_profi
 from literal_statements import changed_local_literals, supports_literal_profile
 from module_bindings import binding_read_lines
 from ordered_comparisons import changed_ordered_sites, threshold_changes_result
-from syntax_profile import PROFILE_DIRECTORY, code_at_lines
+from syntax_profile import PROFILE_DIRECTORY, code_at_lines, equivalent_module
 
 FILE_HEADER = re.compile(
     r"a/([\w./-]+) b/\1\n(?:index [^\n]*\n)?--- a/\1\n\+\+\+ b/\1\n(?=@@ )",
     re.ASCII,
 )
 HUNK_HEADER = re.compile(r"@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@[^\n]*\n")
+CHANGED_COMMENT = re.compile(r"(?m)^[+-][^\n]*#")
 NO_NEWLINE = "\\ No newline at end of file\n"
 UNTRACED = ("*", 0)
+# The pinned suite also has no file metadata or cached-bytecode consumers for this module.
+COMMENT_SAFE_MODULES = {"sqlglot/helper.py"}
 
 
 def mask_guard_operators(body):
@@ -174,6 +177,7 @@ class Impact:
         self.has_guard_coverage = coverage.get("guard_coverage", False)
         self.has_literal_coverage = coverage.get("literal_coverage", False)
         self.has_factory_calls = coverage.get("factory_calls", False)
+        self.has_explicit_source_reads = coverage.get("explicit_source_reads") is True
         decode_dependency = tuple
         if "dependencies" in coverage:
             dependency_table = [tuple(entry) for entry in coverage["dependencies"]]
@@ -527,6 +531,23 @@ class Impact:
             pass
         return observed
 
+    def equivalent_source(self, path, hunks):
+        raw = (path, 0)
+        if (
+            not self.has_explicit_source_reads
+            or path not in COMMENT_SAFE_MODULES
+            or raw in self.collection
+            or raw in self.dependents
+            or not CHANGED_COMMENT.search(hunks)
+        ):
+            return False
+        try:
+            source = (self.baseline / path).read_bytes()
+            updated = apply_hunks(source.decode("utf-8"), hunks).encode("utf-8")
+            return equivalent_module(path, source, updated)
+        except (OSError, ValueError, SyntaxError, RecursionError, Warning):
+            return False
+
     def select(self, patch):
         """Return affected test numbers, or None when the full suite is needed."""
         sections = re.split(r"(?m)^diff --git ", patch)
@@ -544,6 +565,7 @@ class Impact:
             changes[path] = section[header.end():]
 
         if len(changes) > 1:
+            changes = {path: hunks for path, hunks in changes.items() if not self.equivalent_source(path, hunks)}
             sources = {path: hunks for path, hunks in changes.items()
                        if path.startswith("sqlglot/") and path.endswith(".py")}
             # A fixture with identical loader output and no raw readers adds no effective edit.

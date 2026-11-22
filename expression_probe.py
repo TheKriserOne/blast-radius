@@ -1,7 +1,7 @@
 """Capture expression validation receiver classes during baseline coverage."""
 
 import sys
-from functools import wraps
+from functools import partial, wraps
 from importlib.machinery import PathFinder
 from pathlib import Path
 
@@ -12,6 +12,11 @@ EXPRESSION_MODULE = "sqlglot.expressions.core"
 EXPRESSION_PATH = "sqlglot/expressions/core.py"
 _probe = None
 PLAIN_ARGUMENT_TYPES = {bool, int, float, complex, str, bytes, tuple, dict, set, frozenset}
+
+
+def execute_expression_module(execute, attach, module):
+    execute(module)
+    attach(module)
 
 
 def class_attribute(cls, name):
@@ -132,13 +137,7 @@ class ExpressionProbe:
         spec = PathFinder.find_spec(name, path, target)
         if spec is None or spec.loader is None:
             return spec
-        execute = spec.loader.exec_module
-
-        def exec_module(module):
-            execute(module)
-            self.attach(module)
-
-        spec.loader.exec_module = exec_module
+        spec.loader.exec_module = partial(execute_expression_module, spec.loader.exec_module, self.attach)
         return spec
 
 
