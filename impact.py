@@ -10,7 +10,7 @@ from hashlib import sha256
 from types import SimpleNamespace
 from zipfile import BadZipFile, ZipFile
 
-from dialect_fields import changed_dialect_fields
+from dialect_fields import changed_dialect_fields, changed_type_mappings
 from expression_arguments import changed_expression_validators
 from factory_changes import factory_argument_structure
 from factory_probe import changed_show_entries, opaque as factory_opaque, tag as factory_tag
@@ -200,7 +200,7 @@ class Impact:
         self.ordered_spans = defaultdict(list)
         self.ordered_value_sites = set()
         self.ordered_values = defaultdict(list)
-        self.code_read_files = set()
+        self.code_reads = defaultdict(set)
         all_dependencies = self.dependents.keys() | self.collection
         for path, line in all_dependencies:
             if path.startswith("@ordered-site:"):
@@ -216,11 +216,16 @@ class Impact:
                 site, token = path.removeprefix("@ordered-value:").rsplit(":", 1)
                 self.ordered_values[site].append((token, (path, line)))
             elif path.startswith("@identity-code:"):
-                self.code_read_files.add(path.removeprefix("@identity-code:").rsplit(":", 1)[0])
+                file, _ = path.removeprefix("@identity-code:").rsplit(":", 1)
+                self.code_reads[file].add((path, line))
         self.unknown_numeric_reads = {
             dependency for dependency in all_dependencies if dependency[0].startswith("@numeric-unknown:")
         }
         self.has_numeric_missing_keys = ("@numeric-missing-keys", 0) in all_dependencies
+        self.has_type_mapping_reads = {
+            ("@type-map-sites:sqlglot.generator", 0),
+            ("@type-map-sites:sqlglot.expressions.builders", 0),
+        } <= all_dependencies
         self.identity_sites = {
             path.removeprefix("@identity-site:") for path, _ in all_dependencies
             if path.startswith("@identity-site:")
@@ -327,6 +332,23 @@ class Impact:
             return None
         return set().union(*(self.dependents.get(dependency, ()) for dependency in dependencies))
 
+    def type_mapping_dependencies(self, path, source, updated):
+        if not self.has_dialect_fields or not self.has_type_mapping_reads or not (
+            path == "sqlglot/generator.py" or path.startswith("sqlglot/generators/")
+        ):
+            return None
+        fields = changed_type_mappings(path, source, updated)
+        if not fields:
+            return None
+        for field in fields:
+            _, owner, _ = field.split(":", 2)
+            marker = (f"@type-map-owner:{owner}", 0)
+            if marker not in self.dependents and marker not in self.collection:
+                return None
+        return {(path, 0), ("@type-map-unknown", 0)} | self.code_reads.get(path, set()) | {
+            (field, 0) for field in fields
+        }
+
     def identity_dependencies(self, path, source, updated):
         if not self.has_identity_comparisons or not supports_identity_profile(path.replace("/", ".")):
             return None
@@ -354,7 +376,7 @@ class Impact:
     def ordered_dependencies(self, path, source, updated, changed_ranges, touched_lines):
         if not any(
             any(start <= line <= end for line in touched_lines)
-            if end and path not in self.code_read_files
+            if end and path not in self.code_reads
             else any(first <= start <= last for first, last in changed_ranges)
             for start, end in self.ordered_spans[path]
         ):
@@ -493,6 +515,8 @@ class Impact:
                             profiled_deps = self.guard_dependencies(path, source, updated)
                         if profiled_deps is None and same_structure:
                             profiled_deps = self.literal_dependencies(path, source, updated)
+                        if profiled_deps is None and not same_structure:
+                            profiled_deps = self.type_mapping_dependencies(path, source, updated)
                         if profiled_deps is not None:
                             if profiled_deps & self.collection:
                                 return None

@@ -423,6 +423,28 @@ class ImpactTest(unittest.TestCase):
         reads["unrelated"] = [("@numeric-unknown-miss:W", 0)]
         self.assertEqual(self.select(before, after, **options), {4})
 
+    def test_type_mapping_value_uses_exact_key_and_keeps_other_readers(self):
+        path = "sqlglot/generators/example.py"
+        before = (
+            "class Example:\n"
+            "    TYPE_MAPPING: dict = {**Base.TYPE_MAPPING, exp.DType.TEXT: 'STRING', exp.DType.BLOB: 'BINARY'}\n"
+        )
+        after = before.replace("'STRING'", "'VARCHAR'")
+        owner = "sqlglot.generators.example.Example"
+        lookup = (f"@type-map:{owner}:TEXT", 0)
+        other = (f"@type-map:{owner}:BLOB", 0)
+        coverage = [("@type-map-sites:sqlglot.generator", 0), ("@type-map-sites:sqlglot.expressions.builders", 0)]
+        reads = {"dependent": [(f"@type-map-owner:{owner}", 0), other], "unrelated": [lookup]}
+        self.assertIsNone(self.select(before, after, path=path, collection=coverage[:1], dialect_reads=reads))
+        options = {"path": path, "collection": coverage, "dialect_reads": reads}
+        self.assertEqual(self.select(before, after, **options), {8})
+        self.assertIsNone(self.select(before, before.replace("exp.DType.TEXT", "exp.DType.INT"), **options))
+        self.assertIsNone(self.select(before, after, path=path, collection=[*coverage, lookup], dialect_reads=reads))
+        for reader in (("@type-map-unknown", 0), (f"@identity-code:{path}:1", 0), (path, 0)):
+            reads["dependent"].append(reader)
+            self.assertEqual(self.select(before, after, **options), {4, 8})
+            reads["dependent"].pop()
+
     def test_identity_rewrite_keeps_uncertified_tests_and_code_readers(self):
         path = "sqlglot/executor/example.py"
         before = "def check(value):\n    return value is None\n"

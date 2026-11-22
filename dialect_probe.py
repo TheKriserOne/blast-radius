@@ -1,10 +1,11 @@
-"""Record week-offset reads and numeric-escape lookups on the pinned checkout."""
+"""Record dialect, tokenizer, and generator mapping reads on the pinned checkout."""
 
 import ast
 import sys
 from contextvars import ContextVar
 from importlib.machinery import PathFinder
 from pathlib import Path
+from types import BuiltinMethodType
 
 from factory_probe import attach_factory_calls
 from guard_comparisons import GuardComparisons, supports_guard_profile
@@ -15,16 +16,33 @@ from ordered_comparisons import OrderedComparisons, observe_order, supports_orde
 
 MODULES = {
     "sqlglot.dialects.dialect",
+    "sqlglot.expressions.builders",
     "sqlglot.generator",
     "sqlglot.optimizer.simplify",
     "sqlglot.tokenizer_core",
 }
+TYPE_MAPPING_SITES = {"sqlglot.generator": 1, "sqlglot.expressions.builders": 2}
 PROBE_SOURCE_READ = ContextVar("probe_source_read", default=None)
 
 
+def mapping_classes(base, field, mapping):
+    classes = [base] if base is not None else []
+    seen = set()
+    while classes:
+        cls = classes.pop()
+        if cls in seen:
+            continue
+        seen.add(cls)
+        classes.extend(cls.__subclasses__())
+        if vars(cls).get(field) is mapping:
+            yield cls
+
+
 class DialectReads(ast.NodeTransformer):
-    def __init__(self):
+    def __init__(self, module):
+        self.module = module
         self.numeric_lookups = 0
+        self.type_mapping_lookups = 0
 
     def visit_Attribute(self, node):
         self.generic_visit(node)
@@ -59,6 +77,18 @@ class DialectReads(ast.NodeTransformer):
                 ),
                 node,
             )
+        if isinstance(getter, ast.Attribute) and getter.attr == "get" and len(node.args) == 2 and not node.keywords:
+            table = getter.value
+            if (
+                (self.module == "sqlglot.generator" and isinstance(table, ast.Attribute) and table.attr == "TYPE_MAPPING")
+                or (self.module == "sqlglot.expressions.builders" and isinstance(table, ast.Name) and table.id == "type_mapping")
+            ):
+                self.type_mapping_lookups += 1
+                return ast.copy_location(ast.Call(
+                    func=ast.Name(id="_blast_radius_type_mapping", ctx=ast.Load()),
+                    args=[getter, *node.args],
+                    keywords=[],
+                ), node)
         return node
 
 
@@ -69,6 +99,8 @@ class DialectProbe:
         self.identity = IdentityProbe(baseline, scope)
         self.week_tags = {}
         self.escape_owners = {}
+        self.type_map_owners = {}
+        self.type_map_lookups = {}
         if any(
             module in MODULES
             or supports_identity_profile(module)
@@ -97,19 +129,12 @@ class DialectProbe:
         identity = id(mapping)
         if identity not in self.escape_owners:
             tokenizer = getattr(sys.modules.get("sqlglot.tokens"), "Tokenizer", None)
-            classes = [tokenizer] if tokenizer is not None else []
-            seen = set()
-            owners = []
-            while classes:
-                cls = classes.pop()
-                if cls in seen:
-                    continue
-                seen.add(cls)
-                classes.extend(cls.__subclasses__())
-                if vars(cls).get("NUMERIC_ESCAPES") is mapping:
-                    owners.append(f"{cls.__module__}.{cls.__qualname__}")
+            owners = tuple(
+                f"{cls.__module__}.{cls.__qualname__}"
+                for cls in mapping_classes(tokenizer, "NUMERIC_ESCAPES", mapping)
+            )
             # Retain the dictionary so a later allocation cannot reuse its identity.
-            self.escape_owners[identity] = mapping, tuple(owners)
+            self.escape_owners[identity] = mapping, owners
         return self.escape_owners[identity][1]
 
     def numeric_escape(self, mapping, key):
@@ -126,6 +151,35 @@ class DialectProbe:
             kind = "@numeric-unknown" if value is not None else "@numeric-unknown-miss"
             dependencies.add((f"{kind}:{key}", 0))
         return value
+
+    def type_mapping(self, getter, key, default):
+        result = getter(key, default)
+        scope = self.scope()
+        dtype = getattr(sys.modules.get("sqlglot.expressions.datatypes"), "DType", None)
+        if type(getter) is not BuiltinMethodType or type(getter.__self__) is not dict or type(key) is not dtype:
+            scope.add(("@type-map-unknown", 0))
+            return result
+        mapping = getter.__self__
+        identity = id(mapping)
+        lookup = identity, key
+        if lookup not in self.type_map_lookups:
+            if identity not in self.type_map_owners:
+                generator = getattr(sys.modules.get("sqlglot.generator"), "Generator", None)
+                # Pinned table copies take their entries from classes in the resulting owner's MRO.
+                owners = {
+                    f"{base.__module__}.{base.__qualname__}"
+                    for cls in mapping_classes(generator, "TYPE_MAPPING", mapping)
+                    for base in cls.__mro__ if base.__module__.startswith("sqlglot.")
+                }
+                self.type_map_owners[identity] = mapping, owners
+            _, owners = self.type_map_owners[identity]
+            self.type_map_lookups[lookup] = (
+                {(f"@type-map:{owner}:{key.name}", 0) for owner in owners}
+                | {(f"@type-map-owner:{owner}", 0) for owner in owners}
+                if owners else {("@type-map-unknown", 0)}
+            )
+        scope.update(self.type_map_lookups[lookup])
+        return result
 
     def guard(self, site):
         self.scope().add((f"@guard-read:{site}", 0))
@@ -154,10 +208,12 @@ class DialectProbe:
             source = spec.loader.get_source(name)
         finally:
             PROBE_SOURCE_READ.reset(context)
-        reads = DialectReads()
+        reads = DialectReads(name)
         tree = reads.visit(ast.parse(source, spec.origin))
         if name == "sqlglot.tokenizer_core" and reads.numeric_lookups != 2:
             raise RuntimeError("Expected both numeric escape readers in the pinned tokenizer")
+        if name in TYPE_MAPPING_SITES and reads.type_mapping_lookups != TYPE_MAPPING_SITES[name]:
+            raise RuntimeError("Expected all TYPE_MAPPING lookup sites in the pinned source")
         relative_path = expected.relative_to(self.baseline).as_posix()
         comparisons = IdentityReads(relative_path)
         if identity_profile:
@@ -176,6 +232,7 @@ class DialectProbe:
         def execute(module):
             module.__dict__["_blast_radius_week_offset"] = self.week_offset
             module.__dict__["_blast_radius_numeric_escape"] = self.numeric_escape
+            module.__dict__["_blast_radius_type_mapping"] = self.type_mapping
             module.__dict__["_blast_radius_identity"] = self.identity.compare
             module.__dict__["_blast_radius_guard"] = self.guard
             module.__dict__["_blast_radius_literal"] = self.literal_assignment
@@ -183,6 +240,8 @@ class DialectProbe:
             self.scope().update(comparisons.sites | guards.sites | literals.sites | ordered.sites)
             if name == "sqlglot.tokenizer_core":
                 self.scope().add(("@numeric-missing-keys", 0))
+            if name in TYPE_MAPPING_SITES:
+                self.scope().add((f"@type-map-sites:{name}", 0))
             exec(code, module.__dict__)
             attach_factory_calls(module)
 

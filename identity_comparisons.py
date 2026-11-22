@@ -158,7 +158,7 @@ class IdentityProbe:
         if filename.startswith(self.prefix):
             path = filename.removeprefix(self.prefix)
             if (
-                path == "sqlglot/parser.py"
+                path in {"sqlglot/parser.py", "sqlglot/generator.py"}
                 or path.startswith(("sqlglot/parsers/", "sqlglot/generators/", "sqlglot/optimizer/"))
                 or supports_identity_profile(path.replace("/", "."))
             ):

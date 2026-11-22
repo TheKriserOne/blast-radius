@@ -76,3 +76,39 @@ def changed_dialect_fields(path, source, updated):
         if original_fields.get(tag) != updated_fields.get(tag)
     }
     return fields, updated_fields.keys() - original_fields.keys()
+
+
+def type_mapping_structure(module, module_name):
+    values = {}
+    for cls in module.body:
+        if not isinstance(cls, ast.ClassDef) or cls.decorator_list:
+            continue
+        for statement in cls.body:
+            match statement:
+                case (ast.Assign(targets=[ast.Name(id="TYPE_MAPPING")], value=ast.Dict() as table)
+                      | ast.AnnAssign(target=ast.Name(id="TYPE_MAPPING"), value=ast.Dict() as table)):
+                    pass
+                case _:
+                    continue
+            for key, value in zip(table.keys, table.values):
+                if (
+                    isinstance(key, ast.Attribute)
+                    and isinstance(key.value, ast.Attribute) and key.value.attr == "DType"
+                    and isinstance(key.value.value, ast.Name) and key.value.value.id == "exp"
+                    and isinstance(value, ast.Constant) and type(value.value) is str
+                ):
+                    field = f"@type-map:{module_name}.{cls.name}:{key.attr}"
+                    if field in values:
+                        return None, {}
+                    values[field] = value.value
+                    value.value = ""
+    return ast.dump(module), values
+
+
+def changed_type_mappings(path, source, updated):
+    module_name = path.removesuffix(".py").replace("/", ".")
+    before, original = type_mapping_structure(ast.parse(source.encode("utf-8"), path), module_name)
+    after, replacement = type_mapping_structure(ast.parse(updated.encode("utf-8"), path), module_name)
+    if before is None or before != after or original.keys() != replacement.keys():
+        return set()
+    return {tag for tag, value in original.items() if value != replacement[tag]}
