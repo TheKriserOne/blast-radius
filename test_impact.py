@@ -13,8 +13,8 @@ from expression_arguments import possible_argument_classes
 from expression_probe import missing_optional_arguments
 from factory_changes import FUNCTION_BUILDERS_SOURCE
 from factory_probe import (
-    FUNCTION_TABLES, MATCHED_TABLE_SITES, PLACEHOLDER_TABLE, RANGE_TABLE, STATEMENT_TABLE, TOKEN_MEMBERS_SOURCE,
-    UNARY_TABLE,
+    FUNCTION_TABLES, MATCHED_TABLE_SITES, PLACEHOLDER_TABLE, PRIMARY_TABLE, RANGE_TABLE, STATEMENT_TABLE,
+    TOKEN_MEMBERS_SOURCE, UNARY_TABLE,
 )
 from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filtered_dependency, pair_dependency
@@ -841,6 +841,42 @@ class ImpactTest(unittest.TestCase):
         ):
             with self.subTest(updated=updated):
                 self.assertIsNone(self.select(before, updated, collection=sites, **options))
+
+    def test_primary_key_edits_keep_collection_and_legacy_fallbacks(self):
+        path = "sqlglot/parsers/example.py"
+        entry = "        TokenType.HEX_STRING: lambda self, token: self.parse_hex(token),\n"
+        before = (
+            "from sqlglot.tokens import TokenType\n"
+            "class Example:\n"
+            f"    {PRIMARY_TABLE}: dict = {{\n"
+            f"        **Base.{PRIMARY_TABLE},\n{entry}    }}\n"
+        )
+        owner = "sqlglot.parsers.example.Example"
+        tag, modules = FUNCTION_TABLES[PRIMARY_TABLE]
+        sites = [(f"{tag}-sites:{module}", 0) for module in modules]
+        null_read = (f"{tag}:{owner}:NULL", 0)
+        reads = {
+            "dependent": [(f"{tag}-owner:{owner}", 0), (f"{tag}:{owner}:HEX_STRING", 0)],
+            "unrelated": [null_read, (path, 5)],
+        }
+        options = {"path": path, "dialect_reads": reads, "token_members": ("HEX_STRING", "NULL")}
+        removed = before.replace(entry, "")
+        renamed = before.replace("TokenType.HEX_STRING", "TokenType.NULL")
+        self.assertEqual(self.select(before, removed, collection=sites, **options), {4})
+        self.assertEqual(self.select(before, renamed, collection=sites, **options), {4, 8})
+        self.assertIsNone(self.select(before, renamed, collection=[*sites, null_read], **options))
+        self.assertIsNone(self.select(before, removed, **options))
+
+        body_edit = before.replace("parse_hex", "parse_blob")
+        self.assertEqual(self.select(before, body_edit, **options), {8})
+        self.assertEqual(self.select(before, body_edit, collection=sites, **options), {8})
+
+        for unsupported in (
+            renamed.replace(f"**Base.{PRIMARY_TABLE}", "**Base.NUMERIC_PARSERS"),
+            renamed.replace("TokenType.NULL", "TokenType.HEX_ALIAS"),
+        ):
+            with self.subTest(unsupported=unsupported):
+                self.assertIsNone(self.select(before, unsupported, collection=sites, **options))
 
     def test_statement_binding_and_legacy_string_table_coverage(self):
         path = "sqlglot/parsers/example.py"

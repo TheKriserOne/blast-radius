@@ -9,7 +9,8 @@ from pathlib import Path
 from types import BuiltinMethodType, MethodType
 
 from factory_probe import (
-    ALTER_TABLE, FUNCTION_TABLES, MATCHED_TABLE_SITES, RANGE_TABLE, TOKEN_MATCH_TABLE_SITES, attach_factory_calls,
+    ALTER_TABLE, FUNCTION_TABLES, MATCHED_TABLE_SITES, PRIMARY_TABLE, RANGE_TABLE, TOKEN_MATCH_TABLE_SITES,
+    attach_factory_calls,
 )
 from guard_comparisons import GuardComparisons, supports_guard_profile
 from identity_comparisons import IdentityProbe, IdentityReads, supports_identity_profile
@@ -141,7 +142,7 @@ class DialectReads(ast.NodeTransformer):
             table = getter.value
             if (
                 self.module == "sqlglot.parser" and isinstance(table, ast.Attribute)
-                and table.attr in {"FUNCTION_PARSERS", ALTER_TABLE}
+                and table.attr in {"FUNCTION_PARSERS", ALTER_TABLE, PRIMARY_TABLE}
             ):
                 return self.function_table_read(node, table.attr, "_blast_radius_function_get", [getter, *node.args])
             if (
@@ -166,10 +167,13 @@ class DialectReads(ast.NodeTransformer):
     def visit_Subscript(self, node):
         self.generic_visit(node)
         table = node.value
-        if (
-            self.module == "sqlglot.generators.snowflake" and isinstance(node.ctx, ast.Load)
-            and isinstance(table, ast.Attribute) and table.attr == "FUNCTIONS"
-            and isinstance(node.slice, ast.Constant)
+        if not isinstance(node.ctx, ast.Load) or not isinstance(table, ast.Attribute):
+            return node
+        if self.module == "sqlglot.generators.snowflake" and table.attr == "FUNCTIONS" and isinstance(node.slice, ast.Constant):
+            return self.function_table_read(node, table.attr, "_blast_radius_function_item", [table, node.slice])
+        if self.module == "sqlglot.parser" and table.attr == PRIMARY_TABLE and (
+            isinstance(node.slice, ast.Attribute) and isinstance(node.slice.value, ast.Name)
+            and node.slice.value.id == "TokenType"
         ):
             return self.function_table_read(node, table.attr, "_blast_radius_function_item", [table, node.slice])
         return node
@@ -326,10 +330,10 @@ class DialectProbe:
         if name in TYPE_MAPPING_SITES and reads.type_mapping_lookups != TYPE_MAPPING_SITES[name]:
             raise RuntimeError("Expected all TYPE_MAPPING lookup sites in the pinned source")
         function_sites = {field: tag for field, (tag, modules) in FUNCTION_TABLES.items() if name in modules}
-        # ALTER SESSION and range negation add direct reads alongside the matches.
+        direct_sites = {ALTER_TABLE: 1, RANGE_TABLE: 1, PRIMARY_TABLE: 5}
         expected_function_sites = {
             field: MATCHED_TABLE_SITES.get(field, TOKEN_MATCH_TABLE_SITES.get(field, 1))
-            + (field in {ALTER_TABLE, RANGE_TABLE})
+            + direct_sites.get(field, 0)
             for field in function_sites
         }
         if reads.function_table_lookups != expected_function_sites:

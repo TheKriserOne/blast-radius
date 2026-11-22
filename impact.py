@@ -227,8 +227,14 @@ class Impact:
         self.ordered_value_sites = set()
         self.ordered_values = defaultdict(list)
         self.code_reads = defaultdict(set)
+        self.unknown_function_reads = {field: set() for field in FUNCTION_TABLES}
+        unknown_function_fields = {f"{tag}-unknown": field for field, (tag, _) in FUNCTION_TABLES.items()}
         all_dependencies = self.dependents.keys() | self.collection
         for path, line in all_dependencies:
+            if "-unknown:" in path:
+                field = unknown_function_fields.get(path.partition(":")[0])
+                if field is not None:
+                    self.unknown_function_reads[field].add((path, line))
             if path.startswith("@ordered-site:"):
                 site = path.removeprefix("@ordered-site:")
                 file, lineno, _ = site.rsplit(":", 2)
@@ -255,10 +261,6 @@ class Impact:
         self.covered_function_tables = {
             field for field, (tag, modules) in FUNCTION_TABLES.items()
             if {(f"{tag}-sites:{module}", 0) for module in modules} <= all_dependencies
-        }
-        self.unknown_function_reads = {
-            field: {dep for dep in all_dependencies if dep[0].startswith(f"{tag}-unknown:")}
-            for field, (tag, _) in FUNCTION_TABLES.items()
         }
         self.identity_sites = {
             path.removeprefix("@identity-site:") for path, _ in all_dependencies
