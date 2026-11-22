@@ -75,7 +75,7 @@ class GuardComparisons(ast.NodeTransformer):
 
 def guard_structure(module, path):
     normalizer = GuardComparisons(path)
-    return ast.dump(normalizer.visit(module)), normalizer.operators
+    return normalizer.visit(module), normalizer.operators
 
 
 def changed_guards(path, source, updated, baseline=None):

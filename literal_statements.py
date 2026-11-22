@@ -71,7 +71,7 @@ class LiteralStatements(ast.NodeTransformer):
 
 def literal_structure(module, path):
     normalizer = LiteralStatements(path)
-    return ast.dump(normalizer.visit(module)), normalizer.literals
+    return normalizer.visit(module), normalizer.literals
 
 
 def changed_local_literals(path, source, updated, baseline=None):

@@ -102,7 +102,7 @@ class OrderedComparisons(ast.NodeTransformer):
 
 def ordered_structure(module, path):
     normalizer = OrderedComparisons(path)
-    return ast.dump(normalizer.visit(module)), normalizer.comparisons
+    return normalizer.visit(module), normalizer.comparisons
 
 
 def changed_ordered_sites(path, source, updated, baseline=None):

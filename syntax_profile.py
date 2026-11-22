@@ -25,19 +25,24 @@ def equivalent_module(path, source, updated):
 
 def baseline_profile(path, source, normalize):
     module = ast.parse(source.encode("utf-8"), path)
-    shape, sites = normalize(module, path)
+    normalized, sites = normalize(module, path)
     scopes = tuple(
         (min([node.lineno, *(d.lineno for d in getattr(node, "decorator_list", ()))]), node.end_lineno)
         for node in ast.walk(module)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda))
     )
-    return shape, sites, scopes
+    return ast.dump(normalized), sites, scopes
 
 
 def match_profile(path, source, updated, normalize, baseline):
     before, original, scopes = baseline if baseline is not None else baseline_profile(path, source, normalize)
-    after, patched = normalize(ast.parse(updated.encode("utf-8"), path), path)
-    if before != after or len(original) != len(patched):
+    # Unchanged paired values cannot narrow test selection.
+    if not original:
+        return None
+    normalized, patched = normalize(ast.parse(updated.encode("utf-8"), path), path)
+    if len(original) != len(patched) or all(old == new for old, new in zip(original.values(), patched.values())):
+        return None
+    if before != ast.dump(normalized):
         return None
     return zip(original.items(), patched.values()), scopes
 

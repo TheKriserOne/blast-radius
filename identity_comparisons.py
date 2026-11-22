@@ -39,7 +39,7 @@ def identity_structure(module, path):
         if candidate(node, (ast.Is, ast.Eq)):
             operators[location(path, node)] = isinstance(node.ops[0], ast.Is)
             node.ops[0] = ast.Is()
-    return ast.dump(module), operators
+    return module, operators
 
 
 def changed_identity_sites(path, source, updated, baseline=None):

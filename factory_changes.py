@@ -21,21 +21,28 @@ def pure_function_entry(value, builders):
     )
 
 
-def has_module_binding(module, local_name, source, members):
-    imports = [
-        (node, alias) for node in ast.walk(module) if isinstance(node, (ast.Import, ast.ImportFrom))
-        for alias in node.names if (alias.asname or alias.name.split(".")[0]) == local_name
-    ]
-    return (
-        len(imports) == 1 and isinstance(imports[0][0], ast.ImportFrom)
-        and imports[0][0] in module.body and imports[0][0].module == source and imports[0][0].level == 0
-        and imports[0][1].name in members
-        and not any(
-            (isinstance(node, ast.Name) and node.id == local_name and not isinstance(node.ctx, ast.Load))
-            or (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == local_name)
-            for node in ast.walk(module)
-        )
-    )
+def module_bindings(module, expected):
+    top_level = set(module.body)
+    imports, invalid = set(), set()
+    for node in ast.walk(module):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                name = alias.asname or alias.name.split(".")[0]
+                if name not in expected:
+                    continue
+                source, members = expected[name]
+                if (
+                    name in imports or not isinstance(node, ast.ImportFrom) or node not in top_level
+                    or node.module != source or node.level != 0 or alias.name not in members
+                ):
+                    invalid.add(name)
+                else:
+                    imports.add(name)
+        elif isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load) and node.id in expected:
+            invalid.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in expected:
+            invalid.add(node.name)
+    return imports - invalid
 
 
 def argument_index_shape(value, builders):
@@ -64,10 +71,16 @@ def argument_index_shape(value, builders):
 
 
 def function_table_structure(module, module_name, builders, token_members=()):
-    if builders and not has_module_binding(module, "exp", "sqlglot", {"exp", "expressions"}):
+    expected = {}
+    if builders:
+        expected.update(exp=("sqlglot", {"exp", "expressions"}), seq_get=("sqlglot.helper", {"seq_get"}))
+    if token_members:
+        expected["TokenType"] = ("sqlglot.tokens", {"TokenType"})
+    bindings = module_bindings(module, expected) if expected else set()
+    if "exp" not in bindings:
         builders = {}
-    has_seq_get = builders and has_module_binding(module, "seq_get", "sqlglot.helper", {"seq_get"})
-    if token_members and not has_module_binding(module, "TokenType", "sqlglot.tokens", {"TokenType"}):
+    has_seq_get = builders and "seq_get" in bindings
+    if "TokenType" not in bindings:
         token_members = ()
     tables = {}
     for cls in module.body:
