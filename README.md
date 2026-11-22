@@ -48,6 +48,8 @@ The function-table rule also handles changes to literal argument indices in hand
 
 For `PROPERTY_PARSERS`, `ALTER_PARSERS`, and `ALTER_ALTER_PARSERS`, the probes record key lookups including misses during lookahead. The `ALTER_PARSERS` probes also cover the direct handler lookup for `ALTER SESSION`.
 
+Statement dispatch uses `TokenType` lookups, including misses and the `DESCRIBE` lookahead. Key edits must use canonical members of the pinned enum.
+
 For audited private module constants, the selector uses the callers that load the binding. The rule checks the pinned source, the initializer shape, and the compiled code of surrounding functions.
 
 When a flag makes an expression argument required, the selector includes tests that validated the expression with that argument missing. It also retains validations with custom behavior or multiple missing required arguments, since the change can reorder their errors.

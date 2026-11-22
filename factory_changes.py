@@ -2,7 +2,7 @@
 
 import ast
 
-from factory_probe import FUNCTION_TABLES, MATCHED_TABLE_SITES
+from factory_probe import FUNCTION_TABLES, MATCHED_TABLE_SITES, STATEMENT_TABLE
 
 
 FUNCTION_BUILDERS_SOURCE = "sqlglot/expressions/__init__.py"
@@ -63,10 +63,12 @@ def argument_index_shape(value, builders):
     return constructor.attr, ast.dump(signature), tuple(keywords)
 
 
-def function_table_structure(module, module_name, builders):
+def function_table_structure(module, module_name, builders, token_members=()):
     if builders and not has_module_binding(module, "exp", "sqlglot", {"exp", "expressions"}):
         builders = {}
     has_seq_get = builders and has_module_binding(module, "seq_get", "sqlglot.helper", {"seq_get"})
+    if token_members and not has_module_binding(module, "TokenType", "sqlglot.tokens", {"TokenType"}):
+        token_members = ()
     tables = {}
     for cls in module.body:
         if not isinstance(cls, ast.ClassDef) or cls.decorator_list:
@@ -78,16 +80,27 @@ def function_table_structure(module, module_name, builders):
                     pass
                 case _:
                     continue
+            statement_table = field == STATEMENT_TABLE
+            if statement_table and not token_members:
+                continue
             owner = field, f"{module_name}.{cls.name}"
             if owner in tables:
                 return None, {}
             # These handlers receive the parser as their positional argument.
-            entry_builders = {} if field in MATCHED_TABLE_SITES else builders
+            entry_builders = {} if statement_table or field in MATCHED_TABLE_SITES else builders
             fixed, pure, seen = [], {}, set()
             keys, expressions = [], []
             for key, value in zip(table.keys, table.values):
-                if isinstance(key, ast.Constant) and type(key.value) is str:
-                    name = key.value
+                match key:
+                    case ast.Attribute(value=ast.Name(id="TokenType"), attr=name) if (
+                        statement_table and name in token_members
+                    ):
+                        pass
+                    case ast.Constant(value=name) if not statement_table and type(name) is str:
+                        pass
+                    case _:
+                        name = None
+                if name is not None:
                     if name in seen:
                         return None, {}
                     seen.add(name)
@@ -100,7 +113,10 @@ def function_table_structure(module, module_name, builders):
                         pure[name] = ast.dump(value), len(keys), isinstance(value, ast.Lambda), index_shape
                         continue
                     fixed.append(name)
-                    key.value = ""
+                    if statement_table:
+                        key.attr = ""
+                    else:
+                        key.value = ""
                 keys.append(key)
                 expressions.append(value)
             tables[owner] = fixed, pure
@@ -108,10 +124,14 @@ def function_table_structure(module, module_name, builders):
     return ast.dump(module), tables
 
 
-def changed_function_keys(path, source, updated, builders):
+def changed_function_keys(path, source, updated, builders, token_members=()):
     module_name = path.removesuffix(".py").replace("/", ".")
-    before, original = function_table_structure(ast.parse(source.encode("utf-8"), path), module_name, builders)
-    after, replacement = function_table_structure(ast.parse(updated.encode("utf-8"), path), module_name, builders)
+    before, original = function_table_structure(
+        ast.parse(source.encode("utf-8"), path), module_name, builders, token_members,
+    )
+    after, replacement = function_table_structure(
+        ast.parse(updated.encode("utf-8"), path), module_name, builders, token_members,
+    )
     if before is None or before != after or original.keys() != replacement.keys():
         return {}
     changes = {}

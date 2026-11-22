@@ -10,6 +10,7 @@ from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from dialect_fields import TYPE_MEMBERS_SOURCE
 from factory_changes import FUNCTION_BUILDERS_SOURCE
+from factory_probe import TOKEN_MEMBERS_SOURCE
 from guard_comparisons import guard_structure, supports_guard_profile
 from identity_comparisons import identity_structure, supports_identity_profile
 from impact import FunctionBodies
@@ -26,10 +27,11 @@ MATCHERS = (
 )
 
 
-def build_syntax(baseline, type_members=(), function_builders=()):
+def build_syntax(baseline, type_members=(), function_builders=(), *, token_members=()):
     with ZipFile(baseline / "syntax.zip", "w") as archive:
         for kind, relative, members in (
             ("type-members", TYPE_MEMBERS_SOURCE, type_members),
+            ("token-members", TOKEN_MEMBERS_SOURCE, token_members),
             ("function-builders", FUNCTION_BUILDERS_SOURCE, function_builders),
         ):
             if members:
@@ -64,6 +66,8 @@ if __name__ == "__main__":
     baseline = Path(sys.argv[1]).resolve()
     sys.path.insert(0, str(baseline))
     from sqlglot import exp
+    from sqlglot.tokenizer_core import TokenType
+    from sqlglot.tokens import TokenType as ParserTokenType
 
     members = tuple(sorted(name for name, member in exp.DType.__members__.items() if name == member.name))
     plain_methods = {
@@ -77,4 +81,7 @@ if __name__ == "__main__":
         and type(builder := getattr_static(cls, "from_arg_list", None)) is classmethod
         and type(builder.__func__) is FunctionType
     }
-    build_syntax(baseline, members, builders)
+    token_members = tuple(sorted(
+        name for name, member in TokenType.__members__.items() if name == member.name
+    )) if ParserTokenType is TokenType else ()
+    build_syntax(baseline, members, builders, token_members=token_members)

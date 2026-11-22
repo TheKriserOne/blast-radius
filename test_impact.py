@@ -12,7 +12,7 @@ from dialect_fields import TYPE_MEMBERS_SOURCE
 from expression_arguments import possible_argument_classes
 from expression_probe import missing_optional_arguments
 from factory_changes import FUNCTION_BUILDERS_SOURCE
-from factory_probe import FUNCTION_TABLES, MATCHED_TABLE_SITES
+from factory_probe import FUNCTION_TABLES, MATCHED_TABLE_SITES, STATEMENT_TABLE, TOKEN_MEMBERS_SOURCE
 from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filtered_dependency, pair_dependency
 from identity_comparisons import pure_equivalent
@@ -27,7 +27,7 @@ class ImpactTest(unittest.TestCase):
         path="sqlglot/parsers/example.py", expression_validators=None, dialect_reads=None,
         identity_reads=None, factory_calls=None, guard_reads=None, literal_reads=None, fixture_reads=None,
         cached_source=None, ordered_reads=None, argument_presence=False, extra_changes=(), type_members=(),
-        function_builders=(), explicit_source_reads=False,
+        function_builders=(), explicit_source_reads=False, token_members=(),
     ):
         tests = [
             {"id": "dependent", "number": 4, "file": "tests/test_dependent.py"},
@@ -87,11 +87,15 @@ class ImpactTest(unittest.TestCase):
                 builder_source = root / FUNCTION_BUILDERS_SOURCE
                 builder_source.parent.mkdir(parents=True, exist_ok=True)
                 builder_source.write_text("# test function builder registry\n", encoding="utf-8")
-            if cached_source is not None or type_members or function_builders:
+            if token_members:
+                token_source = root / TOKEN_MEMBERS_SOURCE
+                token_source.parent.mkdir(parents=True, exist_ok=True)
+                token_source.write_text("# test token member registry\n", encoding="utf-8")
+            if cached_source is not None or type_members or function_builders or token_members:
                 source = root / path
                 if cached_source is not None:
                     source.write_text(cached_source, encoding="utf-8")
-                build_syntax(root, type_members, function_builders)
+                build_syntax(root, type_members, function_builders, token_members=token_members)
                 source.write_text(before, encoding="utf-8")
             coverage_file = root / "coverage.json.gz"
             coverage_file.write_bytes(gzip.compress(json.dumps(coverage).encode("utf-8")))
@@ -705,6 +709,113 @@ class ImpactTest(unittest.TestCase):
                 self.assertIsNone(self.select(before, eager_default, **options))
                 argument_builder = addition.replace(f"'NEW': {handler}", "'NEW': exp.CurrentTime.from_arg_list")
                 self.assertIsNone(self.select(before, argument_builder, function_builders=("CurrentTime",), **options))
+
+    def test_statement_key_edits_use_canonical_token_hits_and_misses(self):
+        path = "sqlglot/parsers/example.py"
+        handler = "lambda self: self.parse_statement()"
+        entry = f"TokenType.SHOW: {handler}"
+        before = (
+            "from sqlglot.tokens import TokenType\n"
+            "class Example:\n"
+            f"    STATEMENT_PARSERS = {{**Base.STATEMENT_PARSERS, {entry}}}\n"
+        )
+        owner = "sqlglot.parsers.example.Example"
+        tag, modules = FUNCTION_TABLES[STATEMENT_TABLE]
+        sites = [(f"{tag}-sites:{module}", 0) for module in modules]
+        hit = (f"{tag}:{owner}:SHOW", 0)
+        miss = (f"{tag}:{owner}:ATTACH", 0)
+        reads = {"dependent": [(f"{tag}-owner:{owner}", 0), hit], "unrelated": [miss]}
+        options = {"path": path, "collection": sites, "dialect_reads": reads}
+        members = ("SHOW", "ATTACH")
+        rename = before.replace("TokenType.SHOW", "TokenType.ATTACH")
+        self.assertIsNone(self.select(before, rename, type_members=members, **options))
+        self.assertIsNone(self.select(before, rename, path=path, token_members=members, dialect_reads=reads))
+        self.assertEqual(self.select(before, rename, token_members=members, **options), {4, 8})
+        removed = before.replace(f", {entry}", "")
+        self.assertEqual(self.select(before, removed, token_members=members, **options), {4})
+        added = before.replace(entry, f"{entry}, TokenType.ATTACH: {handler}")
+        self.assertEqual(self.select(before, added, token_members=members, **options), {8})
+        self.assertIsNone(self.select(
+            before, added, path=path, token_members=members, collection=[*sites, miss], dialect_reads=reads,
+        ))
+        for key in ("TokenType.UNKNOWN", "TokenType.SHOW_ALIAS", "'ATTACH'", "449"):
+            with self.subTest(key=key):
+                self.assertIsNone(self.select(
+                    before, rename.replace("TokenType.ATTACH", key), token_members=members, **options,
+                ))
+        argument_builder = added.replace(f"TokenType.ATTACH: {handler}", "TokenType.ATTACH: exp.CurrentTime.from_arg_list")
+        builder_import = "from sqlglot import exp\n"
+        self.assertIsNone(self.select(
+            builder_import + before, builder_import + argument_builder,
+            token_members=members, function_builders=("CurrentTime",), **options,
+        ))
+
+        write_archive = build_syntax
+
+        def write_stale_profile(root, *args, **kwargs):
+            write_archive(root, *args, **kwargs)
+            (root / TOKEN_MEMBERS_SOURCE).write_text("# changed enum source\n", encoding="utf-8")
+
+        with patch(f"{__name__}.build_syntax", side_effect=write_stale_profile):
+            self.assertIsNone(self.select(before, added, token_members=members, **options))
+
+    def test_statement_binding_and_legacy_string_table_coverage(self):
+        path = "sqlglot/parsers/example.py"
+        binding = "from sqlglot.tokens import TokenType\n"
+        before = (
+            binding
+            + "class Example:\n"
+            "    STATEMENT_PARSERS = {TokenType.SHOW: lambda self: self.parse_show()}\n"
+            "    FUNCTIONS = {'OLD': lambda args: args[0]}\n"
+        )
+        owner = "sqlglot.parsers.example.Example"
+        statement_tag, statement_modules = FUNCTION_TABLES[STATEMENT_TABLE]
+        function_tag, function_modules = FUNCTION_TABLES["FUNCTIONS"]
+        statement_sites = [(f"{statement_tag}-sites:{module}", 0) for module in statement_modules]
+        function_sites = [(f"{function_tag}-sites:{module}", 0) for module in function_modules]
+        reads = {
+            "dependent": [(f"{statement_tag}-owner:{owner}", 0), (f"{statement_tag}:{owner}:SHOW", 0)],
+            "unrelated": [(f"{function_tag}-owner:{owner}", 0), (f"{function_tag}:{owner}:OLD", 0)],
+        }
+        rename = before.replace("TokenType.SHOW", "TokenType.ATTACH")
+        wrong_bindings = (
+            "from other import TokenType\n",
+            "from sqlglot.tokens import Other as TokenType\n",
+            binding + "TokenType = Other\n",
+        )
+        for wrong in wrong_bindings:
+            with self.subTest(binding=wrong):
+                self.assertIsNone(self.select(
+                    before.replace(binding, wrong), rename.replace(binding, wrong), path=path,
+                    collection=statement_sites, dialect_reads=reads, token_members=("SHOW", "ATTACH"),
+                ))
+        string_edit = before.replace("'OLD'", "'NEW'")
+        self.assertEqual(self.select(
+            before, string_edit, path=path, collection=function_sites, dialect_reads=reads,
+        ), {8})
+
+    def test_statement_handler_body_edits_keep_line_coverage(self):
+        path = "sqlglot/parsers/example.py"
+        tag, modules = FUNCTION_TABLES[STATEMENT_TABLE]
+        sites = [(f"{tag}-sites:{module}", 0) for module in modules]
+        owner = "sqlglot.parsers.example.Example"
+        for annotation in ("", ": dict"):
+            with self.subTest(annotation=annotation):
+                before = (
+                    "from sqlglot.tokens import TokenType\n"
+                    "class Example:\n"
+                    f"    STATEMENT_PARSERS{annotation} = {{\n"
+                    "        TokenType.SHOW: lambda self: self.parse_show(),\n"
+                    "    }\n"
+                )
+                reads = {
+                    "dependent": [(path, 4)],
+                    "unrelated": [(f"{tag}-owner:{owner}", 0), (f"{tag}:{owner}:SHOW", 0)],
+                }
+                self.assertEqual(self.select(
+                    before, before.replace("parse_show", "parse_preview"), path=path,
+                    collection=sites, dialect_reads=reads, token_members=("SHOW",),
+                ), {4})
 
     def test_function_builder_accepts_index_change_in_plain_constructor(self):
         path = "sqlglot/parsers/example.py"

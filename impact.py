@@ -13,7 +13,8 @@ from zipfile import BadZipFile, ZipFile
 from dialect_fields import TYPE_MEMBERS_SOURCE, changed_dialect_fields, changed_type_mappings
 from expression_arguments import changed_expression_validators
 from factory_changes import FUNCTION_BUILDERS_SOURCE, changed_function_keys, factory_argument_structure
-from factory_probe import FUNCTION_TABLES, changed_show_entries, opaque as factory_opaque, tag as factory_tag
+from factory_probe import FUNCTION_TABLES, STATEMENT_TABLE, TOKEN_MEMBERS_SOURCE, changed_show_entries
+from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filter_comments, filtered_dependency, fixture_pairs, pair_dependency
 from guard_comparisons import changed_guards, supports_guard_profile
 from identity_comparisons import changed_identity_sites, supports_identity_profile
@@ -137,15 +138,20 @@ class FunctionBodies(ast.NodeVisitor):
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Assign(self, node):
-        # Keep table handler bodies in the module shape so the table matcher can check them.
-        if self.has_parser_tables and any(isinstance(target, ast.Name) and target.id in FUNCTION_TABLES
-                                          for target in node.targets):
+        # Statement handler bodies retain ordinary line coverage.
+        if self.has_parser_tables and any(
+            isinstance(target, ast.Name) and target.id in FUNCTION_TABLES and target.id != STATEMENT_TABLE
+            for target in node.targets
+        ):
             return
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node):
         target = node.target
-        if self.has_parser_tables and isinstance(target, ast.Name) and target.id in FUNCTION_TABLES:
+        if (
+            self.has_parser_tables and isinstance(target, ast.Name)
+            and target.id in FUNCTION_TABLES and target.id != STATEMENT_TABLE
+        ):
             return
         self.generic_visit(node)
 
@@ -164,6 +170,7 @@ class Impact:
     def __init__(self, tests, coverage_file, baseline, import_map_file=None):
         self.baseline = baseline
         self.baseline_files = {}
+        self.token_members = None
         try:
             self.baseline_syntax = ZipFile(baseline / "syntax.zip")
         except (OSError, BadZipFile):
@@ -406,7 +413,15 @@ class Impact:
                 builders = profile
             elif profile:
                 builders = dict.fromkeys(profile, False)
-        changes = changed_function_keys(path, source, updated, builders)
+        uses_statement_table = STATEMENT_TABLE in self.covered_function_tables and STATEMENT_TABLE in source
+        if uses_statement_table and self.token_members is None:
+            registry = self.baseline / TOKEN_MEMBERS_SOURCE
+            profile = None
+            if self.baseline_syntax is not None and registry.is_file():
+                profile = self.cached_profile("token-members", TOKEN_MEMBERS_SOURCE, registry.read_bytes().decode("utf-8"))
+            self.token_members = frozenset(profile or ())
+        token_members = self.token_members if uses_statement_table else ()
+        changes = changed_function_keys(path, source, updated, builders, token_members)
         if not changes:
             return None
         dependencies = {(path, 0)}
