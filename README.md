@@ -46,6 +46,8 @@ For parser function and dispatch table edits, the selector uses the keys read by
 
 The function-table rule also handles changes to literal argument indices in handlers that read those arguments with `seq_get` and pass them to a verified expression constructor.
 
+For `PROPERTY_PARSERS`, the selector keeps tests that looked up an edited key, including misses during lookahead. It accounts for inherited and copied registries and checks for changes to compiled code that tests inspect.
+
 For audited private module constants, the selector uses the callers that load the binding. The rule checks the pinned source, the initializer shape, and the compiled code of surrounding functions.
 
 When a flag makes an expression argument required, the selector includes tests that validated the expression with that argument missing. It also retains validations with custom behavior or multiple missing required arguments, since the change can reorder their errors.

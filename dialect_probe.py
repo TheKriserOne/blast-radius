@@ -6,9 +6,9 @@ from collections import Counter
 from contextvars import ContextVar
 from importlib.machinery import PathFinder
 from pathlib import Path
-from types import BuiltinMethodType
+from types import BuiltinMethodType, MethodType
 
-from factory_probe import FUNCTION_TABLES, attach_factory_calls
+from factory_probe import FUNCTION_TABLES, PROPERTY_TABLE, attach_factory_calls
 from guard_comparisons import GuardComparisons, supports_guard_profile
 from identity_comparisons import IdentityProbe, IdentityReads, supports_identity_profile
 from literal_statements import LiteralStatements, supports_literal_profile
@@ -95,6 +95,11 @@ class DialectReads(ast.NodeTransformer):
         self.generic_visit(node)
         getter = node.func
         if (
+            self.module == "sqlglot.parser" and isinstance(getter, ast.Attribute) and getter.attr == "_match_texts"
+            and len(node.args) == 1 and isinstance(node.args[0], ast.Attribute) and node.args[0].attr == PROPERTY_TABLE
+        ):
+            return self.function_table_read(node, PROPERTY_TABLE, "_blast_radius_property_match", [getter, *node.args])
+        if (
             isinstance(getter, ast.Attribute)
             and getter.attr == "get"
             and isinstance(getter.value, ast.Attribute)
@@ -159,7 +164,8 @@ class DialectReads(ast.NodeTransformer):
     def function_table_read(self, node, field, helper, arguments):
         self.function_table_lookups[field] += 1
         return ast.copy_location(ast.Call(
-            func=ast.Name(id=helper, ctx=ast.Load()), args=[ast.Constant(value=field), *arguments], keywords=[],
+            func=ast.Name(id=helper, ctx=ast.Load()), args=[ast.Constant(value=field), *arguments], keywords=node.keywords
+            if isinstance(node, ast.Call) else [],
         ), node)
 
 
@@ -171,6 +177,7 @@ class DialectProbe:
         self.week_tags = {}
         self.escape_owners = {}
         self.type_maps = MappingLookups("@type-map", "sqlglot.generator", "Generator", "TYPE_MAPPING")
+        self.property_matcher = None
         self.function_tables = {
             field: MappingLookups(tag, "sqlglot.parser", "Parser", field)
             for field, (tag, _) in FUNCTION_TABLES.items()
@@ -257,6 +264,16 @@ class DialectProbe:
         self.record_function_key(field, table, key)
         return table[key]
 
+    def property_match(self, field, match, table, **options):
+        if type(match) is MethodType and match.__func__ is self.property_matcher:
+            parser = match.__self__
+            token = parser._curr
+            if token.token_type not in parser.TEXT_MATCH_EXCLUDED_TOKENS:
+                self.record_function_key(field, table, token.text.upper())
+        else:
+            self.scope().add((f"{self.function_tables[field].tag}-unknown", 0))
+        return match(table, **options)
+
     def guard(self, site):
         self.scope().add((f"@guard-read:{site}", 0))
 
@@ -291,7 +308,8 @@ class DialectProbe:
         if name in TYPE_MAPPING_SITES and reads.type_mapping_lookups != TYPE_MAPPING_SITES[name]:
             raise RuntimeError("Expected all TYPE_MAPPING lookup sites in the pinned source")
         function_sites = {field: tag for field, (tag, modules) in FUNCTION_TABLES.items() if name in modules}
-        if reads.function_table_lookups != dict.fromkeys(function_sites, 1):
+        expected_function_sites = {field: 6 if field == PROPERTY_TABLE else 1 for field in function_sites}
+        if reads.function_table_lookups != expected_function_sites:
             raise RuntimeError("Expected all function table lookups in the pinned source module")
         relative_path = expected.relative_to(self.baseline).as_posix()
         comparisons = IdentityReads(relative_path)
@@ -315,6 +333,7 @@ class DialectProbe:
             module.__dict__["_blast_radius_function_get"] = self.function_get
             module.__dict__["_blast_radius_function_contains"] = self.function_contains
             module.__dict__["_blast_radius_function_item"] = self.function_item
+            module.__dict__["_blast_radius_property_match"] = self.property_match
             module.__dict__["_blast_radius_identity"] = self.identity.compare
             module.__dict__["_blast_radius_guard"] = self.guard
             module.__dict__["_blast_radius_literal"] = self.literal_assignment
@@ -326,6 +345,8 @@ class DialectProbe:
                 self.scope().add((f"@type-map-sites:{name}", 0))
             self.scope().update((f"{tag}-sites:{name}", 0) for tag in function_sites.values())
             exec(code, module.__dict__)
+            if name == "sqlglot.parser":
+                self.property_matcher = module.Parser._match_texts
             attach_factory_calls(module)
 
         spec.loader.exec_module = execute

@@ -12,7 +12,7 @@ from dialect_fields import TYPE_MEMBERS_SOURCE
 from expression_arguments import possible_argument_classes
 from expression_probe import missing_optional_arguments
 from factory_changes import FUNCTION_BUILDERS_SOURCE
-from factory_probe import FUNCTION_TABLES
+from factory_probe import FUNCTION_TABLES, PROPERTY_TABLE
 from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filtered_dependency, pair_dependency
 from identity_comparisons import pure_equivalent
@@ -616,6 +616,59 @@ class ImpactTest(unittest.TestCase):
         self.assertEqual(self.select(before, combined, **options), {4, 8})
         self.assertIsNone(self.select(before, before.replace("self.read()", "self.write()"), **options))
         self.assertIsNone(self.select(before, before.replace("'TRY_CAST'", "'TRY_OTHER_CAST'"), **options))
+
+    def test_property_keys_select_existing_and_new_lookups(self):
+        path = "sqlglot/parser.py"
+        before = (
+            "class Parser:\n"
+            "    PROPERTY_PARSERS = {\n"
+            "        'ENGINE': lambda self: self.parse_engine(),\n"
+            "        'HEAP': lambda self: self.parse_heap(),\n"
+            "    }\n"
+        )
+        owner = "sqlglot.parser.Parser"
+        tag, modules = FUNCTION_TABLES[PROPERTY_TABLE]
+        sites = [(f"{tag}-sites:{module}", 0) for module in modules]
+        existing = (f"{tag}:{owner}:ENGINE", 0)
+        lookahead = (f"{tag}:{owner}:ADD", 0)
+        reads = {
+            "dependent": [(f"{tag}-owner:{owner}", 0), existing],
+            "unrelated": [lookahead],
+        }
+        options = {"path": path, "dialect_reads": reads}
+        rename = before.replace("'ENGINE'", "'ENGINE_MUT'")
+        self.assertIsNone(self.select(before, rename, **options))
+        self.assertEqual(self.select(before, rename, collection=sites, **options), {4})
+        lookahead_change = before.replace("'HEAP'", "'ADD'")
+        self.assertEqual(self.select(before, lookahead_change, collection=sites, **options), {8})
+        self.assertIsNone(self.select(before, lookahead_change, collection=[*sites, lookahead], **options))
+
+    def test_property_entries_use_existing_handlers_for_additions(self):
+        path = "sqlglot/parsers/example.py"
+        handler = "lambda self: self.parse_property()"
+        before = (
+            "from sqlglot import exp\n"
+            "class Example:\n"
+            f"    PROPERTY_PARSERS = {{**Base.PROPERTY_PARSERS, 'KEEP': {handler}}}\n"
+        )
+        owner = "sqlglot.parsers.example.Example"
+        tag, modules = FUNCTION_TABLES[PROPERTY_TABLE]
+        sites = [(f"{tag}-sites:{module}", 0) for module in modules]
+        reads = {
+            "dependent": [(f"{tag}-owner:{owner}", 0), (f"{tag}:{owner}:KEEP", 0)],
+            "unrelated": [(f"{tag}:{owner}:NEW", 0)],
+        }
+        options = {"path": path, "collection": sites, "dialect_reads": reads}
+        removed = before.replace(f", 'KEEP': {handler}", "")
+        self.assertEqual(self.select(before, removed, **options), {4})
+        addition = before.replace(f"'KEEP': {handler}", f"'KEEP': {handler}, 'NEW': {handler}")
+        self.assertEqual(self.select(before, addition, **options), {8})
+        fresh_body = addition.replace(f"'NEW': {handler}", "'NEW': lambda self: self.other_property()")
+        self.assertIsNone(self.select(before, fresh_body, **options))
+        eager_default = addition.replace(f"'NEW': {handler}", "'NEW': lambda self, value=load(): value")
+        self.assertIsNone(self.select(before, eager_default, **options))
+        argument_builder = addition.replace(f"'NEW': {handler}", "'NEW': exp.CurrentTime.from_arg_list")
+        self.assertIsNone(self.select(before, argument_builder, function_builders=("CurrentTime",), **options))
 
     def test_function_builder_accepts_index_change_in_plain_constructor(self):
         path = "sqlglot/parsers/example.py"

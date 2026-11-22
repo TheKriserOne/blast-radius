@@ -2,7 +2,7 @@
 
 import ast
 
-from factory_probe import FUNCTION_TABLES
+from factory_probe import FUNCTION_TABLES, PROPERTY_TABLE
 
 
 FUNCTION_BUILDERS_SOURCE = "sqlglot/expressions/__init__.py"
@@ -81,6 +81,8 @@ def function_table_structure(module, module_name, builders):
             owner = field, f"{module_name}.{cls.name}"
             if owner in tables:
                 return None, {}
+            # Property handlers receive a parser instance as their positional argument.
+            entry_builders = {} if field == PROPERTY_TABLE else builders
             fixed, pure, seen = [], {}, set()
             keys, expressions = [], []
             for key, value in zip(table.keys, table.values):
@@ -89,9 +91,12 @@ def function_table_structure(module, module_name, builders):
                     if name in seen:
                         return None, {}
                     seen.add(name)
-                    if pure_function_entry(value, builders):
+                    if pure_function_entry(value, entry_builders):
                         # The position relative to a spread can decide which binding wins.
-                        index_shape = argument_index_shape(value, builders) if has_seq_get else None
+                        index_shape = (
+                            argument_index_shape(value, entry_builders)
+                            if has_seq_get and entry_builders else None
+                        )
                         pure[name] = ast.dump(value), len(keys), isinstance(value, ast.Lambda), index_shape
                         continue
                     fixed.append(name)

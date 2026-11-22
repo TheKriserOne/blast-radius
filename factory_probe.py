@@ -10,6 +10,7 @@ from types import FunctionType
 
 
 FACTORY_MAP = "BLAST_RADIUS_FACTORY_MAP"
+PROPERTY_TABLE = "PROPERTY_PARSERS"
 FUNCTION_TABLES = {
     "FUNCTIONS": ("@parser-functions", {
         "sqlglot.anonymize",
@@ -19,6 +20,7 @@ FUNCTION_TABLES = {
         "sqlglot.parsers.prql",
     }),
     "FUNCTION_PARSERS": ("@function-parsers", {"sqlglot.anonymize", "sqlglot.parser"}),
+    PROPERTY_TABLE: ("@property-parsers", {"sqlglot.parser"}),
 }
 SHOW_TABLE = "SHOW_PARSERS"
 _probe = None
