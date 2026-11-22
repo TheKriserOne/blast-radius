@@ -2,7 +2,7 @@
 
 import ast
 
-from factory_probe import FUNCTION_TABLES, PROPERTY_TABLE
+from factory_probe import FUNCTION_TABLES, MATCHED_TABLE_SITES
 
 
 FUNCTION_BUILDERS_SOURCE = "sqlglot/expressions/__init__.py"
@@ -81,8 +81,8 @@ def function_table_structure(module, module_name, builders):
             owner = field, f"{module_name}.{cls.name}"
             if owner in tables:
                 return None, {}
-            # Property handlers receive a parser instance as their positional argument.
-            entry_builders = {} if field == PROPERTY_TABLE else builders
+            # These handlers receive the parser as their positional argument.
+            entry_builders = {} if field in MATCHED_TABLE_SITES else builders
             fixed, pure, seen = [], {}, set()
             keys, expressions = [], []
             for key, value in zip(table.keys, table.values):

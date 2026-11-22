@@ -11,6 +11,9 @@ from types import FunctionType
 
 FACTORY_MAP = "BLAST_RADIUS_FACTORY_MAP"
 PROPERTY_TABLE = "PROPERTY_PARSERS"
+ALTER_TABLE = "ALTER_PARSERS"
+ALTER_COLUMN_TABLE = "ALTER_ALTER_PARSERS"
+MATCHED_TABLE_SITES = {PROPERTY_TABLE: 6, ALTER_TABLE: 2, ALTER_COLUMN_TABLE: 1}
 FUNCTION_TABLES = {
     "FUNCTIONS": ("@parser-functions", {
         "sqlglot.anonymize",
@@ -21,6 +24,8 @@ FUNCTION_TABLES = {
     }),
     "FUNCTION_PARSERS": ("@function-parsers", {"sqlglot.anonymize", "sqlglot.parser"}),
     PROPERTY_TABLE: ("@property-parsers", {"sqlglot.parser"}),
+    ALTER_TABLE: ("@alter-parsers", {"sqlglot.parser"}),
+    ALTER_COLUMN_TABLE: ("@alter-alter-parsers", {"sqlglot.parser"}),
 }
 SHOW_TABLE = "SHOW_PARSERS"
 _probe = None

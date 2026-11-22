@@ -12,7 +12,7 @@ from dialect_fields import TYPE_MEMBERS_SOURCE
 from expression_arguments import possible_argument_classes
 from expression_probe import missing_optional_arguments
 from factory_changes import FUNCTION_BUILDERS_SOURCE
-from factory_probe import FUNCTION_TABLES, PROPERTY_TABLE
+from factory_probe import FUNCTION_TABLES, MATCHED_TABLE_SITES
 from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filtered_dependency, pair_dependency
 from identity_comparisons import pure_equivalent
@@ -627,7 +627,7 @@ class ImpactTest(unittest.TestCase):
             "    }\n"
         )
         owner = "sqlglot.parser.Parser"
-        tag, modules = FUNCTION_TABLES[PROPERTY_TABLE]
+        tag, modules = FUNCTION_TABLES["PROPERTY_PARSERS"]
         sites = [(f"{tag}-sites:{module}", 0) for module in modules]
         existing = (f"{tag}:{owner}:ENGINE", 0)
         lookahead = (f"{tag}:{owner}:ADD", 0)
@@ -643,32 +643,68 @@ class ImpactTest(unittest.TestCase):
         self.assertEqual(self.select(before, lookahead_change, collection=sites, **options), {8})
         self.assertIsNone(self.select(before, lookahead_change, collection=[*sites, lookahead], **options))
 
-    def test_property_entries_use_existing_handlers_for_additions(self):
+    def test_alter_tables_use_independent_lookup_receipts(self):
+        path = "sqlglot/parser.py"
+        handler = "lambda self: self.parse_session()"
+        inner_handler = "lambda self: self.parse_alter_session()"
+        before = (
+            "class Parser:\n"
+            f"    ALTER_PARSERS = {{'SESSION': {handler}}}\n"
+            f"    ALTER_ALTER_PARSERS = {{'SESSION': {inner_handler}}}\n"
+        )
+        owner = "sqlglot.parser.Parser"
+        alter_tag, alter_modules = FUNCTION_TABLES["ALTER_PARSERS"]
+        inner_tag, inner_modules = FUNCTION_TABLES["ALTER_ALTER_PARSERS"]
+        alter_sites = [(f"{alter_tag}-sites:{module}", 0) for module in alter_modules]
+        inner_sites = [(f"{inner_tag}-sites:{module}", 0) for module in inner_modules]
+        missed_lookup = (f"{alter_tag}:{owner}:MODE", 0)
+        reads = {
+            "dependent": [(f"{alter_tag}-owner:{owner}", 0), (f"{alter_tag}:{owner}:SESSION", 0)],
+            "unrelated": [
+                (f"{inner_tag}-owner:{owner}", 0),
+                (f"{inner_tag}:{owner}:SESSION", 0),
+                missed_lookup,
+            ],
+        }
+        options = {"path": path, "dialect_reads": reads}
+        outer = before.replace(f"'SESSION': {handler}", f"'SESSIOX': {handler}")
+        inner = before.replace(f"'SESSION': {inner_handler}", f"'SESSIOX': {inner_handler}")
+        self.assertIsNone(self.select(before, outer, collection=inner_sites, **options))
+        self.assertIsNone(self.select(before, inner, collection=alter_sites, **options))
+        self.assertEqual(self.select(before, outer, collection=[*alter_sites, *inner_sites], **options), {4})
+        self.assertEqual(self.select(before, inner, collection=[*alter_sites, *inner_sites], **options), {8})
+        alias = before.replace(f"'SESSION': {handler}", f"'SESSION': {handler}, 'MODE': {handler}")
+        self.assertEqual(self.select(before, alias, collection=alter_sites, **options), {8})
+        self.assertIsNone(self.select(before, alias, collection=[*alter_sites, missed_lookup], **options))
+
+    def test_matched_parser_tables_use_existing_handlers_for_additions(self):
         path = "sqlglot/parsers/example.py"
         handler = "lambda self: self.parse_property()"
-        before = (
-            "from sqlglot import exp\n"
-            "class Example:\n"
-            f"    PROPERTY_PARSERS = {{**Base.PROPERTY_PARSERS, 'KEEP': {handler}}}\n"
-        )
         owner = "sqlglot.parsers.example.Example"
-        tag, modules = FUNCTION_TABLES[PROPERTY_TABLE]
-        sites = [(f"{tag}-sites:{module}", 0) for module in modules]
-        reads = {
-            "dependent": [(f"{tag}-owner:{owner}", 0), (f"{tag}:{owner}:KEEP", 0)],
-            "unrelated": [(f"{tag}:{owner}:NEW", 0)],
-        }
-        options = {"path": path, "collection": sites, "dialect_reads": reads}
-        removed = before.replace(f", 'KEEP': {handler}", "")
-        self.assertEqual(self.select(before, removed, **options), {4})
-        addition = before.replace(f"'KEEP': {handler}", f"'KEEP': {handler}, 'NEW': {handler}")
-        self.assertEqual(self.select(before, addition, **options), {8})
-        fresh_body = addition.replace(f"'NEW': {handler}", "'NEW': lambda self: self.other_property()")
-        self.assertIsNone(self.select(before, fresh_body, **options))
-        eager_default = addition.replace(f"'NEW': {handler}", "'NEW': lambda self, value=load(): value")
-        self.assertIsNone(self.select(before, eager_default, **options))
-        argument_builder = addition.replace(f"'NEW': {handler}", "'NEW': exp.CurrentTime.from_arg_list")
-        self.assertIsNone(self.select(before, argument_builder, function_builders=("CurrentTime",), **options))
+        for field in MATCHED_TABLE_SITES:
+            with self.subTest(field=field):
+                before = (
+                    "from sqlglot import exp\n"
+                    "class Example:\n"
+                    f"    {field} = {{**Base.{field}, 'KEEP': {handler}}}\n"
+                )
+                tag, modules = FUNCTION_TABLES[field]
+                sites = [(f"{tag}-sites:{module}", 0) for module in modules]
+                reads = {
+                    "dependent": [(f"{tag}-owner:{owner}", 0), (f"{tag}:{owner}:KEEP", 0)],
+                    "unrelated": [(f"{tag}:{owner}:NEW", 0)],
+                }
+                options = {"path": path, "collection": sites, "dialect_reads": reads}
+                removed = before.replace(f", 'KEEP': {handler}", "")
+                self.assertEqual(self.select(before, removed, **options), {4})
+                addition = before.replace(f"'KEEP': {handler}", f"'KEEP': {handler}, 'NEW': {handler}")
+                self.assertEqual(self.select(before, addition, **options), {8})
+                fresh_body = addition.replace(f"'NEW': {handler}", "'NEW': lambda self: self.other_property()")
+                self.assertIsNone(self.select(before, fresh_body, **options))
+                eager_default = addition.replace(f"'NEW': {handler}", "'NEW': lambda self, value=load(): value")
+                self.assertIsNone(self.select(before, eager_default, **options))
+                argument_builder = addition.replace(f"'NEW': {handler}", "'NEW': exp.CurrentTime.from_arg_list")
+                self.assertIsNone(self.select(before, argument_builder, function_builders=("CurrentTime",), **options))
 
     def test_function_builder_accepts_index_change_in_plain_constructor(self):
         path = "sqlglot/parsers/example.py"

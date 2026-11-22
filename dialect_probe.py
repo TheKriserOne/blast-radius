@@ -8,7 +8,7 @@ from importlib.machinery import PathFinder
 from pathlib import Path
 from types import BuiltinMethodType, MethodType
 
-from factory_probe import FUNCTION_TABLES, PROPERTY_TABLE, attach_factory_calls
+from factory_probe import ALTER_TABLE, FUNCTION_TABLES, MATCHED_TABLE_SITES, attach_factory_calls
 from guard_comparisons import GuardComparisons, supports_guard_profile
 from identity_comparisons import IdentityProbe, IdentityReads, supports_identity_profile
 from literal_statements import LiteralStatements, supports_literal_profile
@@ -96,9 +96,10 @@ class DialectReads(ast.NodeTransformer):
         getter = node.func
         if (
             self.module == "sqlglot.parser" and isinstance(getter, ast.Attribute) and getter.attr == "_match_texts"
-            and len(node.args) == 1 and isinstance(node.args[0], ast.Attribute) and node.args[0].attr == PROPERTY_TABLE
+            and len(node.args) == 1 and isinstance(node.args[0], ast.Attribute)
+            and node.args[0].attr in MATCHED_TABLE_SITES
         ):
-            return self.function_table_read(node, PROPERTY_TABLE, "_blast_radius_property_match", [getter, *node.args])
+            return self.function_table_read(node, node.args[0].attr, "_blast_radius_table_match", [getter, *node.args])
         if (
             isinstance(getter, ast.Attribute)
             and getter.attr == "get"
@@ -132,7 +133,10 @@ class DialectReads(ast.NodeTransformer):
                 ), node)
         if len(node.args) == 1:
             table = getter.value
-            if self.module == "sqlglot.parser" and isinstance(table, ast.Attribute) and table.attr == "FUNCTION_PARSERS":
+            if (
+                self.module == "sqlglot.parser" and isinstance(table, ast.Attribute)
+                and table.attr in {"FUNCTION_PARSERS", ALTER_TABLE}
+            ):
                 return self.function_table_read(node, table.attr, "_blast_radius_function_get", [getter, *node.args])
             if (
                 (self.module == "sqlglot.parser" and isinstance(table, ast.Name) and table.id == "functions")
@@ -164,8 +168,9 @@ class DialectReads(ast.NodeTransformer):
     def function_table_read(self, node, field, helper, arguments):
         self.function_table_lookups[field] += 1
         return ast.copy_location(ast.Call(
-            func=ast.Name(id=helper, ctx=ast.Load()), args=[ast.Constant(value=field), *arguments], keywords=node.keywords
-            if isinstance(node, ast.Call) else [],
+            func=ast.Name(id=helper, ctx=ast.Load()),
+            args=[ast.Constant(value=field), *arguments],
+            keywords=node.keywords if isinstance(node, ast.Call) else [],
         ), node)
 
 
@@ -177,7 +182,7 @@ class DialectProbe:
         self.week_tags = {}
         self.escape_owners = {}
         self.type_maps = MappingLookups("@type-map", "sqlglot.generator", "Generator", "TYPE_MAPPING")
-        self.property_matcher = None
+        self.original_match_texts = None
         self.function_tables = {
             field: MappingLookups(tag, "sqlglot.parser", "Parser", field)
             for field, (tag, _) in FUNCTION_TABLES.items()
@@ -264,8 +269,8 @@ class DialectProbe:
         self.record_function_key(field, table, key)
         return table[key]
 
-    def property_match(self, field, match, table, **options):
-        if type(match) is MethodType and match.__func__ is self.property_matcher:
+    def table_match(self, field, match, table, **options):
+        if type(match) is MethodType and match.__func__ is self.original_match_texts:
             parser = match.__self__
             token = parser._curr
             if token.token_type not in parser.TEXT_MATCH_EXCLUDED_TOKENS:
@@ -308,7 +313,10 @@ class DialectProbe:
         if name in TYPE_MAPPING_SITES and reads.type_mapping_lookups != TYPE_MAPPING_SITES[name]:
             raise RuntimeError("Expected all TYPE_MAPPING lookup sites in the pinned source")
         function_sites = {field: tag for field, (tag, modules) in FUNCTION_TABLES.items() if name in modules}
-        expected_function_sites = {field: 6 if field == PROPERTY_TABLE else 1 for field in function_sites}
+        # ALTER SESSION reads its handler directly instead of matching the next token.
+        expected_function_sites = {
+            field: MATCHED_TABLE_SITES.get(field, 1) + (field == ALTER_TABLE) for field in function_sites
+        }
         if reads.function_table_lookups != expected_function_sites:
             raise RuntimeError("Expected all function table lookups in the pinned source module")
         relative_path = expected.relative_to(self.baseline).as_posix()
@@ -333,7 +341,7 @@ class DialectProbe:
             module.__dict__["_blast_radius_function_get"] = self.function_get
             module.__dict__["_blast_radius_function_contains"] = self.function_contains
             module.__dict__["_blast_radius_function_item"] = self.function_item
-            module.__dict__["_blast_radius_property_match"] = self.property_match
+            module.__dict__["_blast_radius_table_match"] = self.table_match
             module.__dict__["_blast_radius_identity"] = self.identity.compare
             module.__dict__["_blast_radius_guard"] = self.guard
             module.__dict__["_blast_radius_literal"] = self.literal_assignment
@@ -346,7 +354,7 @@ class DialectProbe:
             self.scope().update((f"{tag}-sites:{name}", 0) for tag in function_sites.values())
             exec(code, module.__dict__)
             if name == "sqlglot.parser":
-                self.property_matcher = module.Parser._match_texts
+                self.original_match_texts = module.Parser._match_texts
             attach_factory_calls(module)
 
         spec.loader.exec_module = execute

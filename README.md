@@ -46,7 +46,7 @@ For parser function and dispatch table edits, the selector uses the keys read by
 
 The function-table rule also handles changes to literal argument indices in handlers that read those arguments with `seq_get` and pass them to a verified expression constructor.
 
-For `PROPERTY_PARSERS`, the selector keeps tests that looked up an edited key, including misses during lookahead. It accounts for inherited and copied registries and checks for changes to compiled code that tests inspect.
+For `PROPERTY_PARSERS`, `ALTER_PARSERS`, and `ALTER_ALTER_PARSERS`, the probes record key lookups including misses during lookahead. The `ALTER_PARSERS` probes also cover the direct handler lookup for `ALTER SESSION`.
 
 For audited private module constants, the selector uses the callers that load the binding. The rule checks the pinned source, the initializer shape, and the compiled code of surrounding functions.
 
