@@ -12,7 +12,10 @@ from dialect_fields import TYPE_MEMBERS_SOURCE
 from expression_arguments import possible_argument_classes
 from expression_probe import missing_optional_arguments
 from factory_changes import FUNCTION_BUILDERS_SOURCE
-from factory_probe import FUNCTION_TABLES, MATCHED_TABLE_SITES, PLACEHOLDER_TABLE, STATEMENT_TABLE, TOKEN_MEMBERS_SOURCE
+from factory_probe import (
+    FUNCTION_TABLES, MATCHED_TABLE_SITES, PLACEHOLDER_TABLE, RANGE_TABLE, STATEMENT_TABLE, TOKEN_MEMBERS_SOURCE,
+    UNARY_TABLE,
+)
 from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filtered_dependency, pair_dependency
 from identity_comparisons import pure_equivalent
@@ -789,6 +792,55 @@ class ImpactTest(unittest.TestCase):
         self.assertIsNone(self.select(before, added.replace("PARAMETER", "UNKNOWN"), collection=sites, **options))
         body_edit = before.replace("parse_placeholder", "parse_alternative")
         self.assertEqual(self.select(before, body_edit, collection=sites, **options), {8})
+
+    def test_unary_key_removal_uses_token_coverage(self):
+        path = "sqlglot/parsers/example.py"
+        entry = "        TokenType.PLUS: lambda self: self.parse_positive(),\n"
+        before = (
+            "from sqlglot.tokens import TokenType\n"
+            "class Example:\n"
+            f"    {UNARY_TABLE} = {{\n{entry}    }}\n"
+        )
+        owner = "sqlglot.parsers.example.Example"
+        tag, modules = FUNCTION_TABLES[UNARY_TABLE]
+        sites = [(f"{tag}-sites:{module}", 0) for module in modules]
+        reads = {
+            "dependent": [(f"{tag}-owner:{owner}", 0), (f"{tag}:{owner}:PLUS", 0)],
+            "unrelated": [(path, 4)],
+        }
+        options = {"path": path, "collection": sites, "dialect_reads": reads, "token_members": ("PLUS",)}
+        self.assertEqual(self.select(before, before.replace(entry, ""), **options), {4})
+        self.assertEqual(self.select(before, before.replace("parse_positive", "parse_unary"), **options), {8})
+
+    def test_range_factory_key_rename_preserves_eager_call(self):
+        path = "sqlglot/parsers/example.py"
+        factory_call = "binary_range_parser(exp.ArrayOverlaps)"
+        entry = f"        TokenType.DAMP: {factory_call},\n"
+        before = (
+            "from sqlglot.tokens import TokenType\n"
+            "class Example:\n"
+            f"    {RANGE_TABLE}: dict = {{\n"
+            f"        **Base.{RANGE_TABLE},\n{entry}    }}\n"
+        )
+        owner = "sqlglot.parsers.example.Example"
+        tag, modules = FUNCTION_TABLES[RANGE_TABLE]
+        sites = [(f"{tag}-sites:{module}", 0) for module in modules]
+        hit = (f"{tag}:{owner}:DAMP", 0)
+        miss = (f"{tag}:{owner}:MEMBER_OF", 0)
+        reads = {"dependent": [(f"{tag}-owner:{owner}", 0), hit], "unrelated": [miss]}
+        options = {"path": path, "dialect_reads": reads, "token_members": ("DAMP", "MEMBER_OF")}
+        renamed = before.replace("TokenType.DAMP", "TokenType.MEMBER_OF")
+        self.assertEqual(self.select(before, renamed, collection=sites, **options), {4, 8})
+        self.assertIsNone(self.select(before, renamed, collection=[*sites, miss], **options))
+        for updated in (
+            before.replace(entry, ""),
+            before.replace(entry, entry + entry.replace("DAMP", "MEMBER_OF")),
+            before.replace("exp.ArrayOverlaps", "exp.JSONArrayContains"),
+            before.replace(entry, entry * 2),
+            renamed.replace("TokenType.MEMBER_OF", "TokenType.DAMP_ALIAS"),
+        ):
+            with self.subTest(updated=updated):
+                self.assertIsNone(self.select(before, updated, collection=sites, **options))
 
     def test_statement_binding_and_legacy_string_table_coverage(self):
         path = "sqlglot/parsers/example.py"

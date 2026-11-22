@@ -48,7 +48,7 @@ The function-table rule also handles changes to literal argument indices in hand
 
 For `PROPERTY_PARSERS`, `ALTER_PARSERS`, and `ALTER_ALTER_PARSERS`, the probes record key lookups including misses during lookahead. The `ALTER_PARSERS` probes also cover the direct handler lookup for `ALTER SESSION`.
 
-Statement and placeholder dispatch use `TokenType` lookups, including misses. Statement tracing also covers `DESCRIBE` lookahead. Key edits must use canonical members of the pinned enum.
+Statement, placeholder, unary, and range dispatch use `TokenType` lookups, including misses. The probes also cover `DESCRIBE` lookahead and the range membership check that can parenthesize a negated predicate. Key edits must use canonical members of the pinned enum.
 
 For audited private module constants, the selector uses the callers that load the binding. The rule checks the pinned source, the initializer shape, and the compiled code of surrounding functions.
 

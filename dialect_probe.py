@@ -8,7 +8,9 @@ from importlib.machinery import PathFinder
 from pathlib import Path
 from types import BuiltinMethodType, MethodType
 
-from factory_probe import ALTER_TABLE, FUNCTION_TABLES, MATCHED_TABLE_SITES, TOKEN_MATCH_TABLE_SITES, attach_factory_calls
+from factory_probe import (
+    ALTER_TABLE, FUNCTION_TABLES, MATCHED_TABLE_SITES, RANGE_TABLE, TOKEN_MATCH_TABLE_SITES, attach_factory_calls,
+)
 from guard_comparisons import GuardComparisons, supports_guard_profile
 from identity_comparisons import IdentityProbe, IdentityReads, supports_identity_profile
 from literal_statements import LiteralStatements, supports_literal_profile
@@ -152,9 +154,12 @@ class DialectReads(ast.NodeTransformer):
 
     def visit_Compare(self, node):
         self.generic_visit(node)
-        if self.module == "sqlglot.anonymize" and len(node.ops) == 1 and isinstance(node.ops[0], ast.In):
+        if len(node.ops) == 1 and isinstance(node.ops[0], ast.In):
             table = node.comparators[0]
-            if isinstance(table, ast.Attribute) and table.attr in FUNCTION_TABLES:
+            if isinstance(table, ast.Attribute) and (
+                (self.module == "sqlglot.anonymize" and table.attr in FUNCTION_TABLES)
+                or (self.module == "sqlglot.parser" and table.attr == RANGE_TABLE)
+            ):
                 return self.function_table_read(node, table.attr, "_blast_radius_function_contains", [node.left, table])
         return node
 
@@ -321,9 +326,10 @@ class DialectProbe:
         if name in TYPE_MAPPING_SITES and reads.type_mapping_lookups != TYPE_MAPPING_SITES[name]:
             raise RuntimeError("Expected all TYPE_MAPPING lookup sites in the pinned source")
         function_sites = {field: tag for field, (tag, modules) in FUNCTION_TABLES.items() if name in modules}
-        # ALTER SESSION adds a direct lookup to the two text matches.
+        # ALTER SESSION and range negation add direct reads alongside the matches.
         expected_function_sites = {
-            field: MATCHED_TABLE_SITES.get(field, TOKEN_MATCH_TABLE_SITES.get(field, 1)) + (field == ALTER_TABLE)
+            field: MATCHED_TABLE_SITES.get(field, TOKEN_MATCH_TABLE_SITES.get(field, 1))
+            + (field in {ALTER_TABLE, RANGE_TABLE})
             for field in function_sites
         }
         if reads.function_table_lookups != expected_function_sites:
