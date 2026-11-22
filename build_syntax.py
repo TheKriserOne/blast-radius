@@ -66,10 +66,15 @@ if __name__ == "__main__":
     from sqlglot import exp
 
     members = tuple(sorted(name for name, member in exp.DType.__members__.items() if name == member.name))
-    builders = tuple(sorted(
-        name for name, cls in vars(exp).items()
+    plain_methods = {
+        name: getattr_static(exp.Expression, name)
+        for name in ("__new__", "__init__", "__setattr__", "_set_parent")
+    }
+    builders = {
+        name: all(getattr_static(cls, method) is original for method, original in plain_methods.items())
+        for name, cls in sorted(vars(exp).items())
         if type(cls) is type and issubclass(cls, exp.Func)
         and type(builder := getattr_static(cls, "from_arg_list", None)) is classmethod
         and type(builder.__func__) is FunctionType
-    ))
+    }
     build_syntax(baseline, members, builders)

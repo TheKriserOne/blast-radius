@@ -2,6 +2,8 @@
 
 import ast
 
+from factory_probe import FUNCTION_TABLES
+
 
 FUNCTION_BUILDERS_SOURCE = "sqlglot/expressions/__init__.py"
 
@@ -19,34 +21,64 @@ def pure_function_entry(value, builders):
     )
 
 
-def function_table_structure(module, module_name, builders):
-    if builders:
-        imports = [
-            (node, alias) for node in ast.walk(module) if isinstance(node, (ast.Import, ast.ImportFrom))
-            for alias in node.names if (alias.asname or alias.name.split(".")[0]) == "exp"
-        ]
-        if not (
-            len(imports) == 1 and isinstance(imports[0][0], ast.ImportFrom)
-            and imports[0][0] in module.body and imports[0][0].module == "sqlglot" and imports[0][0].level == 0
-            and imports[0][1].name == "exp"
-        ) or any(
-            (isinstance(node, ast.Name) and node.id == "exp" and not isinstance(node.ctx, ast.Load))
-            or (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == "exp")
+def has_module_binding(module, local_name, source, members):
+    imports = [
+        (node, alias) for node in ast.walk(module) if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names if (alias.asname or alias.name.split(".")[0]) == local_name
+    ]
+    return (
+        len(imports) == 1 and isinstance(imports[0][0], ast.ImportFrom)
+        and imports[0][0] in module.body and imports[0][0].module == source and imports[0][0].level == 0
+        and imports[0][1].name in members
+        and not any(
+            (isinstance(node, ast.Name) and node.id == local_name and not isinstance(node.ctx, ast.Load))
+            or (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == local_name)
             for node in ast.walk(module)
-        ):
-            builders = ()
+        )
+    )
+
+
+def argument_index_shape(value, builders):
+    if not isinstance(value, ast.Lambda) or not isinstance(value.body, ast.Call):
+        return None
+    signature, call = value.args, value.body
+    args = [*signature.posonlyargs, *signature.args]
+    if len(args) != 1 or signature.vararg or signature.kwarg or signature.kwonlyargs or call.args:
+        return None
+    constructor = call.func
+    if not (
+        isinstance(constructor, ast.Attribute) and isinstance(constructor.value, ast.Name)
+        and constructor.value.id == "exp" and builders.get(constructor.attr)
+    ):
+        return None
+    keywords = []
+    for keyword in call.keywords:
+        match keyword:
+            case ast.keyword(arg=str() as name, value=ast.Call(
+                func=ast.Name(id="seq_get"), args=[ast.Name(id=arg), ast.Constant(value=index)], keywords=[],
+            )) if arg == args[0].arg and type(index) is int:
+                keywords.append(name)
+            case _:
+                return None
+    return constructor.attr, ast.dump(signature), tuple(keywords)
+
+
+def function_table_structure(module, module_name, builders):
+    if builders and not has_module_binding(module, "exp", "sqlglot", {"exp", "expressions"}):
+        builders = {}
+    has_seq_get = builders and has_module_binding(module, "seq_get", "sqlglot.helper", {"seq_get"})
     tables = {}
     for cls in module.body:
         if not isinstance(cls, ast.ClassDef) or cls.decorator_list:
             continue
         for statement in cls.body:
             match statement:
-                case (ast.Assign(targets=[ast.Name(id="FUNCTIONS")], value=ast.Dict() as table)
-                      | ast.AnnAssign(target=ast.Name(id="FUNCTIONS"), value=ast.Dict() as table)):
+                case (ast.Assign(targets=[ast.Name(id=field)], value=ast.Dict() as table)
+                      | ast.AnnAssign(target=ast.Name(id=field), value=ast.Dict() as table)) if field in FUNCTION_TABLES:
                     pass
                 case _:
                     continue
-            owner = f"{module_name}.{cls.name}"
+            owner = field, f"{module_name}.{cls.name}"
             if owner in tables:
                 return None, {}
             fixed, pure, seen = [], {}, set()
@@ -59,7 +91,8 @@ def function_table_structure(module, module_name, builders):
                     seen.add(name)
                     if pure_function_entry(value, builders):
                         # The position relative to a spread can decide which binding wins.
-                        pure[name] = ast.dump(value), len(keys)
+                        index_shape = argument_index_shape(value, builders) if has_seq_get else None
+                        pure[name] = ast.dump(value), len(keys), isinstance(value, ast.Lambda), index_shape
                         continue
                     fixed.append(name)
                     key.value = ""
@@ -79,6 +112,12 @@ def changed_function_keys(path, source, updated, builders):
     changes = {}
     for owner, (fixed, pure) in original.items():
         new_fixed, new_pure = replacement[owner]
+        existing_builders = {value[0] for value in pure.values()}
+        for key, (builder, _, is_lambda, index_shape) in new_pure.items():
+            # New lambda bodies can introduce effects outside the scope of a table edit.
+            if (is_lambda or key in pure) and builder not in existing_builders:
+                if index_shape is None or key not in pure or index_shape != pure[key][3]:
+                    return {}
         keys = {key for old, new in zip(fixed, new_fixed) if old != new for key in (old, new)}
         keys.update(key for key in pure.keys() | new_pure.keys() if pure.get(key) != new_pure.get(key))
         if keys:

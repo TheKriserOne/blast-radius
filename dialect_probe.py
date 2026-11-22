@@ -2,12 +2,13 @@
 
 import ast
 import sys
+from collections import Counter
 from contextvars import ContextVar
 from importlib.machinery import PathFinder
 from pathlib import Path
 from types import BuiltinMethodType
 
-from factory_probe import FUNCTION_TABLE_SITES, attach_factory_calls
+from factory_probe import FUNCTION_TABLES, attach_factory_calls
 from guard_comparisons import GuardComparisons, supports_guard_profile
 from identity_comparisons import IdentityProbe, IdentityReads, supports_identity_profile
 from literal_statements import LiteralStatements, supports_literal_profile
@@ -75,7 +76,7 @@ class DialectReads(ast.NodeTransformer):
         self.module = module
         self.numeric_lookups = 0
         self.type_mapping_lookups = 0
-        self.function_table_lookups = 0
+        self.function_table_lookups = Counter()
 
     def visit_Attribute(self, node):
         self.generic_visit(node)
@@ -126,20 +127,22 @@ class DialectReads(ast.NodeTransformer):
                 ), node)
         if len(node.args) == 1:
             table = getter.value
+            if self.module == "sqlglot.parser" and isinstance(table, ast.Attribute) and table.attr == "FUNCTION_PARSERS":
+                return self.function_table_read(node, table.attr, "_blast_radius_function_get", [getter, *node.args])
             if (
                 (self.module == "sqlglot.parser" and isinstance(table, ast.Name) and table.id == "functions")
                 or (self.module in {"sqlglot.expressions.builders", "sqlglot.parsers.prql"}
                     and isinstance(table, ast.Attribute) and table.attr == "FUNCTIONS")
             ):
-                return self.function_table_read(node, "_blast_radius_function_get", [getter, *node.args])
+                return self.function_table_read(node, "FUNCTIONS", "_blast_radius_function_get", [getter, *node.args])
         return node
 
     def visit_Compare(self, node):
         self.generic_visit(node)
         if self.module == "sqlglot.anonymize" and len(node.ops) == 1 and isinstance(node.ops[0], ast.In):
             table = node.comparators[0]
-            if isinstance(table, ast.Attribute) and table.attr == "FUNCTIONS":
-                return self.function_table_read(node, "_blast_radius_function_contains", [node.left, table])
+            if isinstance(table, ast.Attribute) and table.attr in FUNCTION_TABLES:
+                return self.function_table_read(node, table.attr, "_blast_radius_function_contains", [node.left, table])
         return node
 
     def visit_Subscript(self, node):
@@ -150,13 +153,13 @@ class DialectReads(ast.NodeTransformer):
             and isinstance(table, ast.Attribute) and table.attr == "FUNCTIONS"
             and isinstance(node.slice, ast.Constant)
         ):
-            return self.function_table_read(node, "_blast_radius_function_item", [table, node.slice])
+            return self.function_table_read(node, table.attr, "_blast_radius_function_item", [table, node.slice])
         return node
 
-    def function_table_read(self, node, helper, arguments):
-        self.function_table_lookups += 1
+    def function_table_read(self, node, field, helper, arguments):
+        self.function_table_lookups[field] += 1
         return ast.copy_location(ast.Call(
-            func=ast.Name(id=helper, ctx=ast.Load()), args=arguments, keywords=[],
+            func=ast.Name(id=helper, ctx=ast.Load()), args=[ast.Constant(value=field), *arguments], keywords=[],
         ), node)
 
 
@@ -168,7 +171,10 @@ class DialectProbe:
         self.week_tags = {}
         self.escape_owners = {}
         self.type_maps = MappingLookups("@type-map", "sqlglot.generator", "Generator", "TYPE_MAPPING")
-        self.function_tables = MappingLookups("@parser-functions", "sqlglot.parser", "Parser", "FUNCTIONS")
+        self.function_tables = {
+            field: MappingLookups(tag, "sqlglot.parser", "Parser", field)
+            for field, (tag, _) in FUNCTION_TABLES.items()
+        }
         if any(
             module in MODULES
             or supports_identity_profile(module)
@@ -230,24 +236,25 @@ class DialectProbe:
         scope.update(self.type_maps.dependencies(getter.__self__, key) or (("@type-map-unknown", 0),))
         return result
 
-    def record_function_key(self, table, key):
+    def record_function_key(self, field, table, key):
         scope = self.scope()
+        lookups = self.function_tables[field]
         if type(table) is dict and type(key) is str:
-            scope.update(self.function_tables.dependencies(table, key) or ((f"@parser-functions-unknown:{key}", 0),))
+            scope.update(lookups.dependencies(table, key) or ((f"{lookups.tag}-unknown:{key}", 0),))
         else:
-            scope.add(("@parser-functions-unknown", 0))
+            scope.add((f"{lookups.tag}-unknown", 0))
 
-    def function_get(self, getter, key):
+    def function_get(self, field, getter, key):
         table = getter.__self__ if type(getter) is BuiltinMethodType else None
-        self.record_function_key(table, key)
+        self.record_function_key(field, table, key)
         return getter(key)
 
-    def function_contains(self, key, table):
-        self.record_function_key(table, key)
+    def function_contains(self, field, key, table):
+        self.record_function_key(field, table, key)
         return key in table
 
-    def function_item(self, table, key):
-        self.record_function_key(table, key)
+    def function_item(self, field, table, key):
+        self.record_function_key(field, table, key)
         return table[key]
 
     def guard(self, site):
@@ -283,8 +290,9 @@ class DialectProbe:
             raise RuntimeError("Expected both numeric escape readers in the pinned tokenizer")
         if name in TYPE_MAPPING_SITES and reads.type_mapping_lookups != TYPE_MAPPING_SITES[name]:
             raise RuntimeError("Expected all TYPE_MAPPING lookup sites in the pinned source")
-        if name in FUNCTION_TABLE_SITES and reads.function_table_lookups != 1:
-            raise RuntimeError("Expected the FUNCTIONS lookup in the pinned source module")
+        function_sites = {field: tag for field, (tag, modules) in FUNCTION_TABLES.items() if name in modules}
+        if reads.function_table_lookups != dict.fromkeys(function_sites, 1):
+            raise RuntimeError("Expected all function table lookups in the pinned source module")
         relative_path = expected.relative_to(self.baseline).as_posix()
         comparisons = IdentityReads(relative_path)
         if identity_profile:
@@ -316,8 +324,7 @@ class DialectProbe:
                 self.scope().add(("@numeric-missing-keys", 0))
             if name in TYPE_MAPPING_SITES:
                 self.scope().add((f"@type-map-sites:{name}", 0))
-            if name in FUNCTION_TABLE_SITES:
-                self.scope().add((f"@parser-functions-sites:{name}", 0))
+            self.scope().update((f"{tag}-sites:{name}", 0) for tag in function_sites.values())
             exec(code, module.__dict__)
             attach_factory_calls(module)
 

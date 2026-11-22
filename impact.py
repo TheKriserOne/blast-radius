@@ -13,7 +13,7 @@ from zipfile import BadZipFile, ZipFile
 from dialect_fields import TYPE_MEMBERS_SOURCE, changed_dialect_fields, changed_type_mappings
 from expression_arguments import changed_expression_validators
 from factory_changes import FUNCTION_BUILDERS_SOURCE, changed_function_keys, factory_argument_structure
-from factory_probe import FUNCTION_TABLE_SITES, changed_show_entries, opaque as factory_opaque, tag as factory_tag
+from factory_probe import FUNCTION_TABLES, changed_show_entries, opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filter_comments, filtered_dependency, fixture_pairs, pair_dependency
 from guard_comparisons import changed_guards, supports_guard_profile
 from identity_comparisons import changed_identity_sites, supports_identity_profile
@@ -117,6 +117,7 @@ class FunctionBodies(ast.NodeVisitor):
         module = compile(encoded, filename, "exec", flags=ast.PyCF_ONLY_AST, dont_inherit=True)
         compile(module, filename, "exec", dont_inherit=True)
         self.bodies = []
+        self.has_parser_tables = filename == "sqlglot/parser.py" or filename.startswith("sqlglot/parsers/")
         self.visit(module)
         self.structure = ast.dump(module)
 
@@ -131,6 +132,19 @@ class FunctionBodies(ast.NodeVisitor):
         node.body = node.body[:1] if ast.get_docstring(node, clean=False) is not None else []
 
     visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Assign(self, node):
+        # Keep table handler bodies in the module shape so the table matcher can check them.
+        if self.has_parser_tables and any(isinstance(target, ast.Name) and target.id in FUNCTION_TABLES
+                                          for target in node.targets):
+            return
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node):
+        target = node.target
+        if self.has_parser_tables and isinstance(target, ast.Name) and target.id in FUNCTION_TABLES:
+            return
+        self.generic_visit(node)
 
     def visit_Lambda(self, node):
         # A class-scope closure can change how the class is built at import time.
@@ -227,11 +241,13 @@ class Impact:
             ("@type-map-sites:sqlglot.generator", 0),
             ("@type-map-sites:sqlglot.expressions.builders", 0),
         } <= all_dependencies
-        self.has_function_table_reads = {
-            (f"@parser-functions-sites:{module}", 0) for module in FUNCTION_TABLE_SITES
-        } <= all_dependencies
+        self.covered_function_tables = {
+            field for field, (tag, modules) in FUNCTION_TABLES.items()
+            if {(f"{tag}-sites:{module}", 0) for module in modules} <= all_dependencies
+        }
         self.unknown_function_reads = {
-            dep for dep in all_dependencies if dep[0].startswith("@parser-functions-unknown:")
+            field: {dep for dep in all_dependencies if dep[0].startswith(f"{tag}-unknown:")}
+            for field, (tag, _) in FUNCTION_TABLES.items()
         }
         self.identity_sites = {
             path.removeprefix("@identity-site:") for path, _ in all_dependencies
@@ -374,26 +390,35 @@ class Impact:
         )
 
     def function_table_dependencies(self, path, source, updated):
-        if not self.has_dialect_fields or not self.has_function_table_reads or not (
+        if not self.has_dialect_fields or not self.covered_function_tables or not (
             path == "sqlglot/parser.py" or path.startswith("sqlglot/parsers/")
         ):
             return None
-        builders = ()
+        builders = {}
         registry = self.baseline / FUNCTION_BUILDERS_SOURCE
         if self.baseline_syntax is not None and registry.is_file():
-            builders = self.cached_profile("function-builders", FUNCTION_BUILDERS_SOURCE, registry.read_text("utf-8")) or ()
+            profile = self.cached_profile("function-builders", FUNCTION_BUILDERS_SOURCE, registry.read_text("utf-8"))
+            if isinstance(profile, dict):
+                builders = profile
+            elif profile:
+                builders = dict.fromkeys(profile, False)
         changes = changed_function_keys(path, source, updated, builders)
         if not changes:
             return None
-        dependencies = (
-            {(path, 0), ("@parser-functions-unknown", 0)}
-            | self.unknown_function_reads
-        )
-        for owner, keys in changes.items():
-            marker = (f"@parser-functions-owner:{owner}", 0)
+        dependencies = {(path, 0)}
+        for (field, owner), keys in changes.items():
+            if field not in self.covered_function_tables:
+                return None
+            # Teradata copies this entry under TRYCAST during lazy class initialization.
+            if field == "FUNCTION_PARSERS" and owner == "sqlglot.parser.Parser" and "TRY_CAST" in keys:
+                return None
+            tag, _ = FUNCTION_TABLES[field]
+            marker = (f"{tag}-owner:{owner}", 0)
             if marker not in self.dependents and marker not in self.collection:
                 return None
-            dependencies.update((f"@parser-functions:{owner}:{key}", 0) for key in keys)
+            dependencies.add((f"{tag}-unknown", 0))
+            dependencies.update(self.unknown_function_reads[field])
+            dependencies.update((f"{tag}:{owner}:{key}", 0) for key in keys)
         if path in self.code_reads:
             reads = {tag: int(tag[0].rsplit(":", 1)[1]) for tag in self.code_reads[path]}
             lines = set(reads.values())

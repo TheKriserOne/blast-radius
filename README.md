@@ -42,7 +42,9 @@ make check    # the output's format only
 
 For edits to literal entries in generator type maps, the selector uses type lookups from SQL generation and cast construction. It includes derived generators that inherit or copy the changed table. Added keys must be valid types from the pinned enum.
 
-For parser function table edits, the selector uses the keys read by parsing, function construction, anonymization, and SQL generation, including reads through inherited copies. Renames preserve the original builder evaluation. Only entries with verified side-effect-free bindings can be added or removed by this rule. Readers of compiled code stay selected when that code changes.
+For parser function and dispatch table edits, the selector uses the keys read by parsing, function construction, anonymization, and SQL generation, including reads through inherited copies. Renames preserve the original builder evaluation. Only entries with verified side-effect-free bindings can be added or removed by this rule, and added lambdas must reuse an existing handler body. Readers of compiled code stay selected when that code changes. Edits to the base `TRY_CAST` entry use the full suite because Teradata reads it during lazy import.
+
+The function-table rule also handles changes to literal argument indices in handlers that read those arguments with `seq_get` and pass them to a verified expression constructor.
 
 For audited private module constants, the selector uses the callers that load the binding. The rule checks the pinned source, the initializer shape, and the compiled code of surrounding functions.
 
