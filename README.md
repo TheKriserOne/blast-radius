@@ -52,6 +52,8 @@ Statement, placeholder, unary, range, and primary dispatch use `TokenType` looku
 
 For audited private module constants, the selector uses the callers that load the binding. The rule checks the pinned source, the initializer shape, and the compiled code of surrounding functions.
 
+At two audited subquery optimizer sites, the selector verifies that changing the copy flag preserves the fresh table built before assigning its alias. Source readers and readers of affected compiled code stay scheduled.
+
 When a flag makes an expression argument required, the selector includes tests that validated the expression with that argument missing. It also retains validations with custom behavior or multiple missing required arguments, since the change can reorder their errors.
 
 For an identity-to-equality edit at a profiled comparison, the selector includes tests with a different observed result, an unverified equality method, or direct access to the modified source or code. The baseline probe evaluates only verified pure comparisons.

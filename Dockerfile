@@ -28,6 +28,6 @@ RUN python /app/build_import_map.py /app/coverage.json.gz /import_map.json.gz
 FROM base
 COPY --from=checkout /baseline/sqlglot /app/baseline/sqlglot
 COPY --from=checkout /baseline/tests/fixtures /app/baseline/tests/fixtures
-COPY build_syntax.py dialect_fields.py expression_arguments.py factory_changes.py factory_probe.py fixture_reads.py guard_comparisons.py identity_comparisons.py literal_statements.py module_bindings.py ordered_comparisons.py syntax_profile.py impact.py selector.py coverage.json.gz import_map.json.gz /app/
+COPY build_syntax.py dialect_fields.py expression_arguments.py factory_changes.py factory_probe.py fixture_reads.py fresh_copy.py guard_comparisons.py identity_comparisons.py literal_statements.py module_bindings.py ordered_comparisons.py syntax_profile.py impact.py selector.py coverage.json.gz import_map.json.gz /app/
 RUN python -B /app/build_syntax.py /app/baseline
 CMD ["python", "/app/selector.py"]

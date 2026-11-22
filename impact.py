@@ -16,6 +16,7 @@ from factory_changes import FUNCTION_BUILDERS_SOURCE, changed_function_keys, fac
 from factory_probe import FUNCTION_TABLES, TOKEN_MATCH_TABLE_SITES, TOKEN_MEMBERS_SOURCE, changed_show_entries
 from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filter_comments, filtered_dependency, fixture_pairs, pair_dependency
+from fresh_copy import equivalent_fresh_alias
 from guard_comparisons import changed_guards, supports_guard_profile
 from identity_comparisons import changed_identity_sites, supports_identity_profile
 from literal_statements import changed_local_literals, supports_literal_profile
@@ -440,13 +441,24 @@ class Impact:
             dependencies.add((f"{tag}-unknown", 0))
             dependencies.update(self.unknown_function_reads[field])
             dependencies.update((f"{tag}:{owner}:{key}", 0) for key in keys)
-        if path in self.code_reads:
-            reads = {tag: int(tag[0].rsplit(":", 1)[1]) for tag in self.code_reads[path]}
-            lines = set(reads.values())
-            before = code_at_lines(path, source, lines)
-            after = code_at_lines(path, updated, lines)
-            dependencies.update(tag for tag, line in reads.items() if line not in before or before[line] != after.get(line))
-        return dependencies
+        return dependencies | self.changed_code_dependencies(path, source, updated)
+
+    def changed_code_dependencies(self, path, source, updated):
+        reads = {tag: int(tag[0].rsplit(":", 1)[1]) for tag in self.code_reads.get(path, ())}
+        if not reads:
+            return set()
+        lines = set(reads.values())
+        before = code_at_lines(path, source, lines)
+        after = code_at_lines(path, updated, lines)
+        return {tag for tag, line in reads.items() if line not in before or before[line] != after.get(line)}
+
+    def fresh_copy_dependencies(self, path, source, updated):
+        if (
+            not self.has_explicit_source_reads or not self.has_identity_comparisons
+            or not equivalent_fresh_alias(self.baseline, path, source, updated)
+        ):
+            return None
+        return {(path, 0)} | self.changed_code_dependencies(path, source, updated)
 
     def module_binding_dependencies(self, path, source, updated):
         lines = binding_read_lines(path, source, updated)
@@ -619,7 +631,9 @@ class Impact:
                             if possible_guard_edit:
                                 possible_guard_edit = mask_guard_operators(body) == mask_guard_operators(new_body)
                     if isolated and (changed_ranges or not same_structure):
-                        profiled_deps = self.identity_dependencies(path, source, updated)
+                        profiled_deps = self.fresh_copy_dependencies(path, source, updated)
+                        if profiled_deps is None:
+                            profiled_deps = self.identity_dependencies(path, source, updated)
                         if profiled_deps is None and same_structure and touched_lines:
                             profiled_deps = self.ordered_dependencies(path, source, updated, changed_ranges, touched_lines)
                         if profiled_deps is None and same_structure and possible_guard_edit:

@@ -955,6 +955,48 @@ class ImpactTest(unittest.TestCase):
         different = changed.replace("seq_get(args, 1)", "modify_globals()")
         self.assertIsNone(self.select(before, different, function_builders={"RegexpSplit": True}, **options))
 
+    def test_fresh_copy_equivalence_keeps_source_and_changed_code_readers(self):
+        path = "sqlglot/optimizer/eliminate_subqueries.py"
+        before = (
+            "def rewrite(value):\n"
+            "    return alias(value, copy=False)\n\n"
+            "def untouched():\n"
+            "    return None\n"
+        )
+        after = before.replace("copy=False", "copy=True")
+        raw = (path, 0)
+        changed = (f"@identity-code:{path}:1", 0)
+        untouched = (f"@identity-code:{path}:4", 0)
+        options = {"path": path, "explicit_source_reads": True}
+        with patch("impact.equivalent_fresh_alias", return_value=True):
+            self.assertEqual(self.select(before, after, identity_reads={}, **options), set())
+            self.assertEqual(self.select(before, after, identity_reads={"unrelated": [raw]}, **options), {8})
+            self.assertEqual(self.select(
+                before, after, collection=[untouched],
+                identity_reads={"dependent": [untouched], "unrelated": [changed]}, **options,
+            ), {8})
+            for observed in (raw, changed):
+                with self.subTest(collection=observed):
+                    self.assertIsNone(self.select(before, after, collection=[observed], identity_reads={}, **options))
+
+    def test_fresh_copy_equivalence_requires_coverage_and_isolation(self):
+        path = "sqlglot/optimizer/eliminate_subqueries.py"
+        before = "def rewrite(value):\n    return alias(value, copy=False)\n"
+        after = before.replace("copy=False", "copy=True")
+        options = {"path": path, "explicit_source_reads": True, "identity_reads": {}}
+        with patch("impact.equivalent_fresh_alias", return_value=True) as equivalent:
+            self.assertEqual(self.select(before, after, path=path, explicit_source_reads=True), {4})
+            self.assertEqual(self.select(before, after, path=path, identity_reads={}), {4})
+            self.assertEqual(self.select(
+                before, after, extra_changes=[(
+                    "sqlglot/other.py", "def value():\n    return 1\n", "def value():\n    return 2\n",
+                )], **options,
+            ), {4})
+            equivalent.assert_not_called()
+        with patch("impact.equivalent_fresh_alias", return_value=False) as equivalent:
+            self.assertEqual(self.select(before, after, **options), {4})
+            equivalent.assert_called_once()
+
     def test_identity_rewrite_keeps_uncertified_tests_and_code_readers(self):
         path = "sqlglot/executor/example.py"
         before = "def check(value):\n    return value is None\n"
