@@ -18,6 +18,7 @@ from fixture_reads import filter_comments, filtered_dependency, fixture_pairs, p
 from guard_comparisons import changed_guards, supports_guard_profile
 from identity_comparisons import changed_identity_sites, supports_identity_profile
 from literal_statements import changed_local_literals, supports_literal_profile
+from module_bindings import binding_read_lines
 from ordered_comparisons import changed_ordered_sites, threshold_changes_result
 from syntax_profile import PROFILE_DIRECTORY, code_at_lines
 
@@ -401,6 +402,12 @@ class Impact:
             dependencies.update(tag for tag, line in reads.items() if line not in before or before[line] != after.get(line))
         return dependencies
 
+    def module_binding_dependencies(self, path, source, updated):
+        lines = binding_read_lines(path, source, updated)
+        if lines is None:
+            return None
+        return {(path, 0), (f"@identity-code:{path}:1", 0)} | {(path, line) for line in lines}
+
     def guard_dependencies(self, path, source, updated):
         if not self.has_guard_coverage or not supports_guard_profile(path.removesuffix(".py").replace("/", ".")):
             return None
@@ -559,6 +566,8 @@ class Impact:
                             profiled_deps = self.type_mapping_dependencies(path, source, updated)
                         if profiled_deps is None and not same_structure:
                             profiled_deps = self.function_table_dependencies(path, source, updated)
+                        if profiled_deps is None and not same_structure:
+                            profiled_deps = self.module_binding_dependencies(path, source, updated)
                         if profiled_deps is not None:
                             if profiled_deps & self.collection:
                                 return None

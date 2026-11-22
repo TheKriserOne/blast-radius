@@ -44,6 +44,8 @@ For edits to literal entries in generator type maps, the selector uses type look
 
 For parser function table edits, the selector uses the keys read by parsing, function construction, anonymization, and SQL generation, including reads through inherited copies. Renames preserve the original builder evaluation. Only entries with verified side-effect-free bindings can be added or removed by this rule. Readers of compiled code stay selected when that code changes.
 
+For audited private module constants, the selector uses the callers that load the binding. The rule checks the pinned source, the initializer shape, and the compiled code of surrounding functions.
+
 When a flag makes an expression argument required, the selector includes tests that validated the expression with that argument missing. It also retains validations with custom behavior or multiple missing required arguments, since the change can reorder their errors.
 
 For an identity-to-equality edit at a profiled comparison, the selector includes tests with a different observed result, an unverified equality method, or direct access to the modified source or code. The baseline probe evaluates only verified pure comparisons.

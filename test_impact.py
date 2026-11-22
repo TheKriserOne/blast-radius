@@ -2,6 +2,7 @@ import gzip
 import json
 import unittest
 from difflib import unified_diff
+from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -16,6 +17,7 @@ from factory_probe import opaque as factory_opaque, tag as factory_tag
 from fixture_reads import filtered_dependency, pair_dependency
 from identity_comparisons import pure_equivalent
 from impact import Impact, apply_hunks
+from module_bindings import AUDITED_BINDINGS, binding_read_lines
 from ordered_comparisons import observe_order
 
 
@@ -164,6 +166,25 @@ class ImpactTest(unittest.TestCase):
     def test_class_scope_change_falls_back(self):
         before = "class Factory:\n    value = 1\n"
         self.assertIsNone(self.select(before, before.replace("= 1", "= 2")))
+
+    def test_audited_module_binding_keeps_runtime_and_raw_readers(self):
+        path = "sqlglot/tokenizer_core.py"
+        before = "_KEYS: frozenset[str] = frozenset('12')\ndef read(key):\n    return key in _KEYS\n"
+        after = before.replace("'12'", "'13'")
+        digest = sha256(before.encode("utf-8")).hexdigest()
+        with patch.dict(AUDITED_BINDINGS, {path: (digest, "_KEYS", "frozenset")}):
+            self.assertEqual(self.select(before, after, path=path), {4})
+            self.assertEqual(
+                self.select(before, after, path=path, fixture_reads={"unrelated": [(path, 0)]}),
+                {4, 8},
+            )
+            self.assertIsNone(self.select(before, after, path=path, collection=[(path, 2)]))
+            self.assertEqual(self.select(before, after, path=path, collection=[(f"@identity-code:{path}:2", 0)]), {4})
+            self.assertIsNone(self.select(before, after, path=path, collection=[(f"@identity-code:{path}:1", 0)]))
+            self.assertIsNone(self.select(before, after.replace("def read", "\ndef read"), path=path))
+            self.assertIsNone(self.select(before, after.replace("= frozenset", "= set"), path=path))
+            self.assertIsNone(self.select(before + "# different base\n", after, path=path))
+            self.assertIsNone(binding_read_lines(path, before, after.replace("'13'", r"'\q'")))
 
     def test_fixture_comment_preserves_filtered_reads(self):
         path = "tests/fixtures/example.sql"

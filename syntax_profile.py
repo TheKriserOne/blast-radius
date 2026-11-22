@@ -34,13 +34,18 @@ def enclosing_code_lines(scopes, sites):
     return {1} | {start for start, end in scopes if any(start <= line <= end for line in lines)}
 
 
-def code_at_lines(path, source, lines):
-    by_line = defaultdict(list)
-    module = compile(source.encode("utf-8"), path, "exec", dont_inherit=True)
+def nested_code_objects(module):
     pending = [value for value in module.co_consts if isinstance(value, CodeType)]
     while pending:
         code = pending.pop()
+        yield code
+        pending.extend(value for value in code.co_consts if isinstance(value, CodeType))
+
+
+def code_at_lines(path, source, lines):
+    by_line = defaultdict(list)
+    module = compile(source.encode("utf-8"), path, "exec", dont_inherit=True)
+    for code in nested_code_objects(module):
         if code.co_firstlineno in lines:
             by_line[code.co_firstlineno].append(marshal.dumps(code))
-        pending.extend(value for value in code.co_consts if isinstance(value, CodeType))
     return by_line
